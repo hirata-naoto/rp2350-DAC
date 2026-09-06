@@ -12,8 +12,8 @@ use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
 use embassy_rp::usb::{Driver, InterruptHandler as UsbInterruptHandler};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
+use embassy_usb::driver::{Endpoint, EndpointError, EndpointIn, EndpointOut};
 use embassy_usb::Builder;
-use embassy_usb::driver::{EndpointError, EndpointIn, EndpointOut};
 use panic_probe as _;
 use static_cell::StaticCell;
 
@@ -103,7 +103,11 @@ impl<const N: usize> AudioSampleFifo<N> {
 }
 
 fn pcm24_to_i2s_slot(sample_bytes: &[u8]) -> u32 {
-    let sign = if (sample_bytes[2] & 0x80) != 0 { 0xff } else { 0x00 };
+    let sign = if (sample_bytes[2] & 0x80) != 0 {
+        0xff
+    } else {
+        0x00
+    };
     let sample = i32::from_le_bytes([sample_bytes[0], sample_bytes[1], sample_bytes[2], sign]);
     (sample << 8) as u32
 }
@@ -141,13 +145,18 @@ fn bytes_to_i2s_words(bytes: &[u8], bits_per_sample: u8, out: &mut [u32]) -> usi
     }
 }
 
-#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
+#[embassy_executor::main(
+    executor = "embassy_rp::executor::Executor",
+    entry = "cortex_m_rt::entry"
+)]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("boot");
 
     let driver = Driver::new(p.USB, Irqs);
-    let Pio { mut common, sm0, .. } = Pio::new(p.PIO0, Irqs);
+    let Pio {
+        mut common, sm0, ..
+    } = Pio::new(p.PIO0, Irqs);
 
     let mut usb_config = embassy_usb::Config::new(0x1209, 0x2350);
     usb_config.manufacturer = Some("hirata-naoto");

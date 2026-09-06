@@ -1,18 +1,17 @@
 use embassy_rp::dma;
 use embassy_rp::gpio::{Drive, SlewRate};
 use embassy_rp::interrupt::typelevel::Binding;
-use embassy_rp::mode;
 use embassy_rp::pio::{
     Common, Config, Direction, FifoJoin, Instance, LoadedProgram, PioPin, ShiftConfig,
     ShiftDirection, StateMachine,
 };
 use embassy_rp::pio_programs::clock_divider::calculate_pio_clock_divider;
-use embassy_rp::{Peri, interrupt};
+use embassy_rp::Peri;
 
 const I2S_SLOT_BITS: u32 = 32;
 
 pub struct I2sPioTx<'d, PIO: Instance, const SM: usize> {
-    dma: dma::Channel<'d, mode::Async>,
+    dma: dma::Channel<'d>,
     sm: StateMachine<'d, PIO, SM>,
     data_pin: embassy_rp::pio::Pin<'d, PIO>,
     bit_clock_pin: embassy_rp::pio::Pin<'d, PIO>,
@@ -84,8 +83,10 @@ impl<'d, PIO: Instance, const SM: usize> I2sPioTx<'d, PIO, SM> {
 
         self.sm.set_enable(false);
         self.sm.set_config(&config);
-        self.sm
-            .set_pin_dirs(Direction::Out, &[&self.data_pin, &self.lr_clock_pin, &self.bit_clock_pin]);
+        self.sm.set_pin_dirs(
+            Direction::Out,
+            &[&self.data_pin, &self.lr_clock_pin, &self.bit_clock_pin],
+        );
         self.sm.clear_fifos();
         unsafe { self.sm.set_y(I2S_SLOT_BITS - 2) };
         self.started = false;
