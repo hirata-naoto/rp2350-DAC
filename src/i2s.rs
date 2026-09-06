@@ -84,9 +84,9 @@ impl<'d, PIO: Instance, const SM: usize> I2sPioTx<'d, PIO, SM> {
         let clock_divider = calculate_pio_clock_divider(target_sm_hz);
         let divider_bits = clock_divider.to_bits() as u64;
         let feedback_denominator = divider_bits * FEEDBACK_DENOMINATOR_HZ;
-        let feedback_value_10_14 =
-            ((clk_sys_freq() as u64 * FEEDBACK_NUMERATOR_SCALE) + feedback_denominator / 2)
-                / feedback_denominator;
+        let feedback_value_10_14 = ((clk_sys_freq() as u64 * FEEDBACK_NUMERATOR_SCALE)
+            + feedback_denominator / 2)
+            / feedback_denominator;
         let actual_sample_rate_hz =
             ((feedback_value_10_14 * FEEDBACK_DENOMINATOR_HZ) + (1 << 13)) >> 14;
         let mut config = Config::default();

@@ -315,8 +315,7 @@ async fn main(_spawner: Spawner) {
                 audio::reset_feedback_control(i2s_timing.feedback_value_10_14);
                 info!(
                     "i2s timing actual={}Hz feedback={}",
-                    i2s_timing.actual_sample_rate_hz,
-                    i2s_timing.feedback_value_10_14
+                    i2s_timing.actual_sample_rate_hz, i2s_timing.feedback_value_10_14
                 );
                 silence[..packet_words].fill(0);
                 i2s.prime(&silence[..packet_words]);
@@ -364,17 +363,13 @@ async fn main(_spawner: Spawner) {
                     buffering = false;
                     info!(
                         "playback start fifo={} start={} target={}",
-                        fifo_level_words,
-                        start_level_words,
-                        target_level_words
+                        fifo_level_words, start_level_words, target_level_words
                     );
                 } else if !playback_started {
                     if !buffering {
                         info!(
                             "buffering fifo={} start={} target={}",
-                            fifo_level_words,
-                            start_level_words,
-                            target_level_words
+                            fifo_level_words, start_level_words, target_level_words
                         );
                         buffering = true;
                     }

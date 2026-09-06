@@ -98,11 +98,6 @@ const fn feedback_value_10_14(sample_rate_hz: u32) -> u32 {
     (sample_rate_hz << 14) / 1_000
 }
 
-const fn feedback_packet_10_14(sample_rate_hz: u32) -> [u8; 3] {
-    let bytes = feedback_value_10_14(sample_rate_hz).to_le_bytes();
-    [bytes[0], bytes[1], bytes[2]]
-}
-
 fn supports_sample_rate(sample_rate_hz: u32) -> bool {
     SUPPORTED_SAMPLE_RATES_HZ.contains(&sample_rate_hz)
 }
@@ -179,8 +174,7 @@ pub fn update_feedback_control(
         FEEDBACK_MAX_CORRECTION_10_14,
     );
 
-    let target_feedback =
-        (base_feedback_value_10_14 as i32 + target_correction).max(0) as u32;
+    let target_feedback = (base_feedback_value_10_14 as i32 + target_correction).max(0) as u32;
     let current_feedback = CURRENT_FEEDBACK_VALUE_10_14.load(Ordering::Relaxed);
     let next_feedback = if current_feedback < target_feedback {
         current_feedback.saturating_add(
@@ -348,13 +342,12 @@ impl UsbAudioClass {
             USB_PACKET_SIZE_16 as u16,
             1,
         );
-        let feedback_endpoint_16 =
-            as_alt_16.alloc_endpoint_in(
-                embassy_usb_driver::EndpointType::Isochronous,
-                None,
-                FEEDBACK_PACKET_SIZE,
-                1,
-            );
+        let feedback_endpoint_16 = as_alt_16.alloc_endpoint_in(
+            embassy_usb_driver::EndpointType::Isochronous,
+            None,
+            FEEDBACK_PACKET_SIZE,
+            1,
+        );
         // ストリーム OUT 側へ同期先のフィードバックエンドポイント番号を関連付ける。
         as_alt_16.endpoint_descriptor(
             stream_endpoint_16.info(),
@@ -413,13 +406,12 @@ impl UsbAudioClass {
             USB_PACKET_SIZE_24 as u16,
             1,
         );
-        let feedback_endpoint_24 =
-            as_alt_24.alloc_endpoint_in(
-                embassy_usb_driver::EndpointType::Isochronous,
-                None,
-                FEEDBACK_PACKET_SIZE,
-                1,
-            );
+        let feedback_endpoint_24 = as_alt_24.alloc_endpoint_in(
+            embassy_usb_driver::EndpointType::Isochronous,
+            None,
+            FEEDBACK_PACKET_SIZE,
+            1,
+        );
         as_alt_24.endpoint_descriptor(
             stream_endpoint_24.info(),
             SynchronizationType::Asynchronous,
