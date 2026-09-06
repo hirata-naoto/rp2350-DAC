@@ -1,3 +1,4 @@
+use embassy_rp::clocks::clk_sys_freq;
 use embassy_rp::dma;
 use embassy_rp::gpio::{Drive, SlewRate};
 use embassy_rp::interrupt::typelevel::Binding;
@@ -9,6 +10,15 @@ use embassy_rp::pio_programs::clock_divider::calculate_pio_clock_divider;
 use embassy_rp::Peri;
 
 const I2S_SLOT_BITS: u32 = 32;
+const I2S_CHANNEL_COUNT: u32 = 2;
+const PIO_CYCLES_PER_BIT: u32 = 2;
+const FEEDBACK_DENOMINATOR_HZ: u64 = 1_000;
+const FEEDBACK_NUMERATOR_SCALE: u64 = 32_768;
+
+pub struct I2sTiming {
+    pub actual_sample_rate_hz: u32,
+    pub feedback_value_10_14: u32,
+}
 
 pub struct I2sPioTx<'d, PIO: Instance, const SM: usize> {
     dma: dma::Channel<'d>,
@@ -69,11 +79,20 @@ impl<'d, PIO: Instance, const SM: usize> I2sPioTx<'d, PIO, SM> {
         this
     }
 
-    pub fn configure(&mut self, sample_rate_hz: u32) {
+    pub fn configure(&mut self, sample_rate_hz: u32) -> I2sTiming {
+        let target_sm_hz = sample_rate_hz * I2S_SLOT_BITS * I2S_CHANNEL_COUNT * PIO_CYCLES_PER_BIT;
+        let clock_divider = calculate_pio_clock_divider(target_sm_hz);
+        let divider_bits = clock_divider.to_bits() as u64;
+        let feedback_denominator = divider_bits * FEEDBACK_DENOMINATOR_HZ;
+        let feedback_value_10_14 =
+            ((clk_sys_freq() as u64 * FEEDBACK_NUMERATOR_SCALE) + feedback_denominator / 2)
+                / feedback_denominator;
+        let actual_sample_rate_hz =
+            ((feedback_value_10_14 * FEEDBACK_DENOMINATOR_HZ) + (1 << 13)) >> 14;
         let mut config = Config::default();
         config.use_program(&self.program, &[&self.bit_clock_pin, &self.lr_clock_pin]);
         config.set_out_pins(&[&self.data_pin]);
-        config.clock_divider = calculate_pio_clock_divider(sample_rate_hz * I2S_SLOT_BITS * 2 * 2);
+        config.clock_divider = clock_divider;
         config.shift_out = ShiftConfig {
             threshold: 32,
             direction: ShiftDirection::Left,
@@ -90,6 +109,11 @@ impl<'d, PIO: Instance, const SM: usize> I2sPioTx<'d, PIO, SM> {
         self.sm.clear_fifos();
         unsafe { self.sm.set_y(I2S_SLOT_BITS - 2) };
         self.started = false;
+
+        I2sTiming {
+            actual_sample_rate_hz: actual_sample_rate_hz as u32,
+            feedback_value_10_14: feedback_value_10_14 as u32,
+        }
     }
 
     pub fn prime(&mut self, data: &[u32]) {

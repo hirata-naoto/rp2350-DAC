@@ -88,6 +88,10 @@ impl<const N: usize> AudioSampleFifo<N> {
         self.len -= discard;
     }
 
+    fn len(&self) -> usize {
+        self.len
+    }
+
     fn write_word(&mut self, word: u32) {
         let write = (self.read + self.len) % N;
         self.data[write] = word;
@@ -199,11 +203,14 @@ async fn main(_spawner: Spawner) {
         p.PIN_28,
     );
     let mut silence = [0u32; audio::MAX_I2S_PACKET_WORDS];
-    i2s.configure(audio::current_sample_rate_hz());
+    let mut i2s_timing = i2s.configure(audio::current_sample_rate_hz());
+    audio::reset_feedback_control(i2s_timing.feedback_value_10_14);
     info!(
-        "i2s init rate={}Hz bits={}",
+        "i2s init nominal={}Hz actual={}Hz bits={} feedback={}",
         audio::current_sample_rate_hz(),
-        audio::current_bits_per_sample()
+        i2s_timing.actual_sample_rate_hz,
+        audio::current_bits_per_sample(),
+        i2s_timing.feedback_value_10_14
     );
     let initial_packet_words = audio::current_i2s_packet_words();
     i2s.prime(&silence[..initial_packet_words]);
@@ -281,38 +288,118 @@ async fn main(_spawner: Spawner) {
     let playback_fut = async {
         let mut chunk = [0u32; audio::MAX_I2S_PACKET_WORDS];
         let mut config_version = audio::stream_config_version();
+        let mut playback_started = false;
+        let mut buffering = false;
+        let mut diag_frames = 0u16;
 
         loop {
             let next_config_version = audio::stream_config_version();
             if next_config_version != config_version {
                 config_version = next_config_version;
                 let packet_words = audio::current_i2s_packet_words();
+                let start_level_words = audio::feedback_start_level_words(packet_words);
+                let target_level_words = audio::feedback_target_level_words(packet_words);
                 info!(
-                    "stream config changed rate={}Hz bits={} i2s_words={}",
+                    "stream config changed nominal={}Hz bits={} i2s_words={} start={} target={}",
                     audio::current_sample_rate_hz(),
                     audio::current_bits_per_sample(),
-                    packet_words
+                    packet_words,
+                    start_level_words,
+                    target_level_words
                 );
                 {
                     let mut fifo = AUDIO_FIFO.lock().await;
                     fifo.clear();
                 }
-                i2s.configure(audio::current_sample_rate_hz());
+                i2s_timing = i2s.configure(audio::current_sample_rate_hz());
+                audio::reset_feedback_control(i2s_timing.feedback_value_10_14);
+                info!(
+                    "i2s timing actual={}Hz feedback={}",
+                    i2s_timing.actual_sample_rate_hz,
+                    i2s_timing.feedback_value_10_14
+                );
                 silence[..packet_words].fill(0);
                 i2s.prime(&silence[..packet_words]);
                 i2s.start();
+                playback_started = false;
+                buffering = false;
+                diag_frames = 0;
             }
 
             let packet_words = audio::current_i2s_packet_words();
-            let written = {
+            let start_level_words = audio::feedback_start_level_words(packet_words);
+            let target_level_words = audio::feedback_target_level_words(packet_words);
+            let active = audio::STREAM_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
+            let mut started_this_cycle = false;
+            let (fifo_level_words, written) = {
                 let mut fifo = AUDIO_FIFO.lock().await;
-                if audio::STREAM_ACTIVE.load(core::sync::atomic::Ordering::Relaxed) {
-                    fifo.pop_slice(&mut chunk[..packet_words])
+                if active {
+                    let fifo_level_words = fifo.len();
+                    let should_start = playback_started || fifo_level_words >= start_level_words;
+                    let written = if should_start {
+                        if !playback_started {
+                            started_this_cycle = true;
+                            playback_started = true;
+                        }
+                        fifo.pop_slice(&mut chunk[..packet_words])
+                    } else {
+                        0
+                    };
+                    (fifo_level_words, written)
                 } else {
                     fifo.clear();
-                    0
+                    playback_started = false;
+                    (0, 0)
                 }
             };
+
+            if active {
+                audio::update_feedback_control(
+                    fifo_level_words,
+                    packet_words,
+                    i2s_timing.feedback_value_10_14,
+                );
+
+                if started_this_cycle {
+                    buffering = false;
+                    info!(
+                        "playback start fifo={} start={} target={}",
+                        fifo_level_words,
+                        start_level_words,
+                        target_level_words
+                    );
+                } else if !playback_started {
+                    if !buffering {
+                        info!(
+                            "buffering fifo={} start={} target={}",
+                            fifo_level_words,
+                            start_level_words,
+                            target_level_words
+                        );
+                        buffering = true;
+                    }
+                } else {
+                    buffering = false;
+                }
+
+                diag_frames = diag_frames.saturating_add(1);
+                if diag_frames >= 1_000 {
+                    diag_frames = 0;
+                    info!(
+                        "playback diag fifo={} target={} feedback={} correction={}",
+                        fifo_level_words,
+                        target_level_words,
+                        audio::current_feedback_value_10_14(),
+                        audio::current_feedback_correction_10_14()
+                    );
+                }
+            } else {
+                if buffering || diag_frames != 0 {
+                    buffering = false;
+                    diag_frames = 0;
+                }
+                audio::reset_feedback_control(i2s_timing.feedback_value_10_14);
+            }
 
             chunk[written..packet_words].fill(0);
             i2s.write_words(&chunk[..packet_words]).await;

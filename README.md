@@ -39,8 +39,11 @@ cargo build --release
 - USB: `embassy-usb` による UAC2 非同期等時 OUT + 明示的フィードバック
 - I2S: `embassy-rp` の PIO を使った送信
 - USB 受信データは FIFO に蓄積し、PIO へ DMA 転送
+- フィードバック値は I2S 実効クロックを基準にしつつ、FIFO 残量に追従して微調整
 
 ## 注意
 
 - 24-bit PCM は USB から 3 byte packed little-endian で受け、I2S では 32-bit スロットへ左詰めして出力します。
 - 接続する DAC 側は GPIO27/BCLK, GPIO28/LRCLK, GPIO26/DOUT のマスター送出を受けられる設定にしてください。
+- 再生開始時とサンプルレート変更時は FIFO が所定量たまるまで無音を送り、アンダーランを起こしにくくしています。
+- FIFO あふれ時は古いデータを破棄し、不足時は無音を補完します。通常時はフィードバック制御で FIFO 水位を一定付近へ保つ想定です。
