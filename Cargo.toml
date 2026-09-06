@@ -1,32 +1,28 @@
 [package]
-name = "ch32v305_dac"
+name = "rp2350_dac"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-default = ["chip-ch32v305rbt6"]
-chip-ch32v305fbp6 = ["ch32-hal/ch32v305fbp6"]
-chip-ch32v305gbu6 = ["ch32-hal/ch32v305gbu6"]
-chip-ch32v305rbt6 = ["ch32-hal/ch32v305rbt6"]
-
 [dependencies]
-ch32-hal = { git = "https://github.com/ch32-rs/ch32-hal", default-features = false, features = ["memory-x", "embassy", "rt", "highcode", "time-driver-tim2"] }
+cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m-rt = "0.7.0"
 critical-section = "1.2.0"
-defmt = "0.3"
-defmt-rtt = "0.4"
-embassy-executor = { version = "0.10.0", features = ["platform-spin", "executor-thread"] }
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+embassy-executor = { version = "0.10.0", features = ["defmt", "executor-thread"] }
 embassy-futures = "0.1.2"
+embassy-rp = { version = "0.10.0", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa", "executor-thread"] }
 embassy-sync = "0.8.0"
-embassy-time = "0.5.1"
-embassy-usb = "0.5.1"
+embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-usb = { version = "0.5.1", features = ["defmt"] }
 embassy-usb-driver = "=0.2.0"
 heapless = { version = "0.8.0", default-features = false }
-panic-halt = "1.0.0"
-qingke = { version = "0.7.0", features = ["unsafe-trust-wch-atomics"] }
-qingke-rt = "0.7.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+pio = "0.3.0"
 static_cell = "2.1.0"
 
 [profile.release]
+debug = true
 strip = false
 lto = true
 opt-level = "z"

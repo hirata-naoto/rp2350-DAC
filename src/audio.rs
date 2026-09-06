@@ -11,8 +11,8 @@ pub const CHANNEL_COUNT: usize = 2;
 pub const BITS_PER_SAMPLE_16: u8 = 16;
 pub const BITS_PER_SAMPLE_24: u8 = 24;
 pub const USB_PACKET_SIZE_16: usize = usb_packet_size(BITS_PER_SAMPLE_16, 96_000);
-pub const USB_PACKET_SIZE_24: usize = usb_packet_size(BITS_PER_SAMPLE_24, 48_000);
-pub const MAX_I2S_PACKET_WORDS: usize = i2s_words_per_usb_packet(BITS_PER_SAMPLE_16, 96_000);
+pub const USB_PACKET_SIZE_24: usize = usb_packet_size(BITS_PER_SAMPLE_24, 96_000);
+pub const MAX_I2S_PACKET_WORDS: usize = i2s_words_per_usb_packet(BITS_PER_SAMPLE_24, 96_000);
 
 // Alternate Setting 1 / 2 の有効化状態を保持し、再生開始/停止を追跡する。
 pub static STREAM_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -71,11 +71,8 @@ const fn bytes_per_sample(bits_per_sample: u8) -> usize {
 }
 
 const fn i2s_words_per_sample(bits_per_sample: u8) -> usize {
-    match bits_per_sample {
-        BITS_PER_SAMPLE_16 => 1,
-        BITS_PER_SAMPLE_24 => 2,
-        _ => 1,
-    }
+    let _ = bits_per_sample;
+    CHANNEL_COUNT
 }
 
 const fn usb_packet_size(bits_per_sample: u8, sample_rate_hz: u32) -> usize {
@@ -103,9 +100,7 @@ fn supports_sample_rate(sample_rate_hz: u32) -> bool {
 pub fn supports_stream_format(bits_per_sample: u8, sample_rate_hz: u32) -> bool {
     match bits_per_sample {
         BITS_PER_SAMPLE_16 => supports_sample_rate(sample_rate_hz),
-        // USB FS + 現在の ch32-hal では 512 byte を超える等時パケットを扱えないため、
-        // 24-bit は 48 kHz までに制限する。
-        BITS_PER_SAMPLE_24 => matches!(sample_rate_hz, 44_100 | 48_000),
+        BITS_PER_SAMPLE_24 => supports_sample_rate(sample_rate_hz),
         _ => false,
     }
 }
@@ -246,7 +241,7 @@ impl UsbAudioClass {
             USB_PROTOCOL_IP_02_00,
             None,
         );
-        // Alt 1 は 16-bit 用。96 kHz までを 512 byte 未満の FS パケットで扱える。
+        // Alt 1 は 16-bit 用。96 kHz でも FS の 1023 byte 制限内に収まる。
         as_alt_16.descriptor(
             CS_INTERFACE,
             &[
@@ -306,7 +301,7 @@ impl UsbAudioClass {
             USB_PROTOCOL_IP_02_00,
             None,
         );
-        // Alt 2 は 24-bit packed PCM 用。FS と HAL の 512 byte 制約上、48 kHz までに絞る。
+        // Alt 2 は 24-bit packed PCM 用。96 kHz でも 576 byte/frame で FS 制限内に収まる。
         as_alt_24.descriptor(
             CS_INTERFACE,
             &[
