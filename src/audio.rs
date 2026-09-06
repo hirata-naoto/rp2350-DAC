@@ -19,6 +19,9 @@ pub static STREAM_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CURRENT_SAMPLE_RATE_HZ: AtomicU32 = AtomicU32::new(SAMPLE_RATE_HZ);
 static CURRENT_BITS_PER_SAMPLE: AtomicU8 = AtomicU8::new(BITS_PER_SAMPLE_16);
 static STREAM_CONFIG_VERSION: AtomicU32 = AtomicU32::new(0);
+static BASE_FEEDBACK_VALUE_10_14: AtomicU32 = AtomicU32::new(feedback_value_10_14(SAMPLE_RATE_HZ));
+static CURRENT_FEEDBACK_VALUE_10_14: AtomicU32 =
+    AtomicU32::new(feedback_value_10_14(SAMPLE_RATE_HZ));
 
 const USB_CLASS_AUDIO: u8 = 0x01;
 const USB_SUBCLASS_AUDIO_CONTROL: u8 = 0x01;
@@ -48,6 +51,12 @@ const CHANNEL_CONFIG_FL_FR: u32 = 0x0000_0003;
 const PCM_FORMAT_I: u32 = 0x0000_0001;
 const FEEDBACK_REFRESH_PERIOD: u8 = 1;
 const FEEDBACK_PACKET_SIZE: u16 = 3;
+const FEEDBACK_SMOOTHING_STEP_10_14: i32 = 16;
+const FEEDBACK_MAX_CORRECTION_10_14: i32 = 512;
+const FEEDBACK_ERROR_GAIN_10_14: i32 = 128;
+const FIFO_TARGET_PACKETS: usize = 12;
+const FIFO_START_PACKETS: usize = 6;
+const FIFO_CONTROL_DEADBAND_PACKETS: usize = 1;
 
 const UAC2_CUR: u8 = 0x01;
 const UAC2_GET_RANGE: u8 = 0x02;
@@ -89,11 +98,6 @@ const fn feedback_value_10_14(sample_rate_hz: u32) -> u32 {
     (sample_rate_hz << 14) / 1_000
 }
 
-const fn feedback_packet_10_14(sample_rate_hz: u32) -> [u8; 3] {
-    let bytes = feedback_value_10_14(sample_rate_hz).to_le_bytes();
-    [bytes[0], bytes[1], bytes[2]]
-}
-
 fn supports_sample_rate(sample_rate_hz: u32) -> bool {
     SUPPORTED_SAMPLE_RATES_HZ.contains(&sample_rate_hz)
 }
@@ -115,15 +119,75 @@ pub fn current_bits_per_sample() -> u8 {
 }
 
 pub fn current_feedback_packet() -> [u8; 3] {
-    feedback_packet_10_14(current_sample_rate_hz())
+    let bytes = current_feedback_value_10_14().to_le_bytes();
+    [bytes[0], bytes[1], bytes[2]]
 }
 
 pub fn current_i2s_packet_words() -> usize {
     i2s_words_per_usb_packet(current_bits_per_sample(), current_sample_rate_hz())
 }
 
+pub fn feedback_target_level_words(packet_words: usize) -> usize {
+    packet_words.saturating_mul(FIFO_TARGET_PACKETS)
+}
+
+pub fn feedback_start_level_words(packet_words: usize) -> usize {
+    packet_words.saturating_mul(FIFO_START_PACKETS)
+}
+
 pub fn stream_config_version() -> u32 {
     STREAM_CONFIG_VERSION.load(Ordering::Relaxed)
+}
+
+pub fn current_feedback_value_10_14() -> u32 {
+    CURRENT_FEEDBACK_VALUE_10_14.load(Ordering::Relaxed)
+}
+
+pub fn current_feedback_correction_10_14() -> i32 {
+    current_feedback_value_10_14() as i32 - BASE_FEEDBACK_VALUE_10_14.load(Ordering::Relaxed) as i32
+}
+
+pub fn reset_feedback_control(base_feedback_value_10_14: u32) {
+    BASE_FEEDBACK_VALUE_10_14.store(base_feedback_value_10_14, Ordering::Relaxed);
+    CURRENT_FEEDBACK_VALUE_10_14.store(base_feedback_value_10_14, Ordering::Relaxed);
+}
+
+pub fn update_feedback_control(
+    fifo_level_words: usize,
+    packet_words: usize,
+    base_feedback_value_10_14: u32,
+) -> u32 {
+    BASE_FEEDBACK_VALUE_10_14.store(base_feedback_value_10_14, Ordering::Relaxed);
+
+    let packet_frames = (packet_words / CHANNEL_COUNT).max(1) as i32;
+    let target_words = feedback_target_level_words(packet_words);
+    let deadband_words = packet_words.saturating_mul(FIFO_CONTROL_DEADBAND_PACKETS);
+    let fifo_error_words = target_words as i32 - fifo_level_words as i32;
+
+    let target_correction = if fifo_error_words.unsigned_abs() as usize <= deadband_words {
+        0
+    } else {
+        (fifo_error_words / CHANNEL_COUNT as i32) * FEEDBACK_ERROR_GAIN_10_14 / packet_frames
+    }
+    .clamp(
+        -FEEDBACK_MAX_CORRECTION_10_14,
+        FEEDBACK_MAX_CORRECTION_10_14,
+    );
+
+    let target_feedback = (base_feedback_value_10_14 as i32 + target_correction).max(0) as u32;
+    let current_feedback = CURRENT_FEEDBACK_VALUE_10_14.load(Ordering::Relaxed);
+    let next_feedback = if current_feedback < target_feedback {
+        current_feedback.saturating_add(
+            (target_feedback - current_feedback).min(FEEDBACK_SMOOTHING_STEP_10_14 as u32),
+        )
+    } else {
+        current_feedback.saturating_sub(
+            (current_feedback - target_feedback).min(FEEDBACK_SMOOTHING_STEP_10_14 as u32),
+        )
+    };
+
+    CURRENT_FEEDBACK_VALUE_10_14.store(next_feedback, Ordering::Relaxed);
+    next_feedback
 }
 
 fn update_sample_rate(sample_rate_hz: u32) -> bool {
@@ -278,13 +342,12 @@ impl UsbAudioClass {
             USB_PACKET_SIZE_16 as u16,
             1,
         );
-        let feedback_endpoint_16 =
-            as_alt_16.alloc_endpoint_in(
-                embassy_usb_driver::EndpointType::Isochronous,
-                None,
-                FEEDBACK_PACKET_SIZE,
-                1,
-            );
+        let feedback_endpoint_16 = as_alt_16.alloc_endpoint_in(
+            embassy_usb_driver::EndpointType::Isochronous,
+            None,
+            FEEDBACK_PACKET_SIZE,
+            1,
+        );
         // ストリーム OUT 側へ同期先のフィードバックエンドポイント番号を関連付ける。
         as_alt_16.endpoint_descriptor(
             stream_endpoint_16.info(),
@@ -343,13 +406,12 @@ impl UsbAudioClass {
             USB_PACKET_SIZE_24 as u16,
             1,
         );
-        let feedback_endpoint_24 =
-            as_alt_24.alloc_endpoint_in(
-                embassy_usb_driver::EndpointType::Isochronous,
-                None,
-                FEEDBACK_PACKET_SIZE,
-                1,
-            );
+        let feedback_endpoint_24 = as_alt_24.alloc_endpoint_in(
+            embassy_usb_driver::EndpointType::Isochronous,
+            None,
+            FEEDBACK_PACKET_SIZE,
+            1,
+        );
         as_alt_24.endpoint_descriptor(
             stream_endpoint_24.info(),
             SynchronizationType::Asynchronous,
