@@ -47,6 +47,7 @@ const TERM_SPEAKER: u16 = 0x0301;
 const CHANNEL_CONFIG_FL_FR: u32 = 0x0000_0003;
 const PCM_FORMAT_I: u32 = 0x0000_0001;
 const FEEDBACK_REFRESH_PERIOD: u8 = 1;
+const FEEDBACK_PACKET_SIZE: u16 = 3;
 
 const UAC2_CUR: u8 = 0x01;
 const UAC2_GET_RANGE: u8 = 0x02;
@@ -72,7 +73,7 @@ const fn bytes_per_sample(bits_per_sample: u8) -> usize {
 
 const fn i2s_words_per_sample(bits_per_sample: u8) -> usize {
     let _ = bits_per_sample;
-    CHANNEL_COUNT
+    1
 }
 
 const fn usb_packet_size(bits_per_sample: u8, sample_rate_hz: u32) -> usize {
@@ -278,7 +279,12 @@ impl UsbAudioClass {
             1,
         );
         let feedback_endpoint_16 =
-            as_alt_16.alloc_endpoint_in(embassy_usb_driver::EndpointType::Isochronous, None, 4, 1);
+            as_alt_16.alloc_endpoint_in(
+                embassy_usb_driver::EndpointType::Isochronous,
+                None,
+                FEEDBACK_PACKET_SIZE,
+                1,
+            );
         // ストリーム OUT 側へ同期先のフィードバックエンドポイント番号を関連付ける。
         as_alt_16.endpoint_descriptor(
             stream_endpoint_16.info(),
@@ -287,7 +293,7 @@ impl UsbAudioClass {
             &[0x00, feedback_endpoint_16.info().addr.into()],
         );
         as_alt_16.descriptor(CS_ENDPOINT, &[EP_GENERAL, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        // フィードバック値自体は 10.14 の 3 byte だが、最大長は余裕を見て 4 byte にする。
+        // Full-Speed の 10.14 フィードバック値を 3 byte で返す。
         as_alt_16.endpoint_descriptor(
             feedback_endpoint_16.info(),
             SynchronizationType::NoSynchronization,
@@ -338,7 +344,12 @@ impl UsbAudioClass {
             1,
         );
         let feedback_endpoint_24 =
-            as_alt_24.alloc_endpoint_in(embassy_usb_driver::EndpointType::Isochronous, None, 4, 1);
+            as_alt_24.alloc_endpoint_in(
+                embassy_usb_driver::EndpointType::Isochronous,
+                None,
+                FEEDBACK_PACKET_SIZE,
+                1,
+            );
         as_alt_24.endpoint_descriptor(
             stream_endpoint_24.info(),
             SynchronizationType::Asynchronous,
