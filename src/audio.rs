@@ -16,8 +16,10 @@ pub const MAX_I2S_PACKET_WORDS: usize = i2s_words_per_usb_packet(BITS_PER_SAMPLE
 
 // Alternate Setting 1 / 2 の有効化状態を保持し、再生開始/停止を追跡する。
 pub static STREAM_ACTIVE: AtomicBool = AtomicBool::new(false);
+// USB 制御要求や Alt Setting の切り替え結果をタスク間で共有する。
 static CURRENT_SAMPLE_RATE_HZ: AtomicU32 = AtomicU32::new(SAMPLE_RATE_HZ);
 static CURRENT_BITS_PER_SAMPLE: AtomicU8 = AtomicU8::new(BITS_PER_SAMPLE_16);
+// ストリーム設定の世代番号。再設定が必要なときに main 側が検出する。
 static STREAM_CONFIG_VERSION: AtomicU32 = AtomicU32::new(0);
 static BASE_FEEDBACK_VALUE_10_14: AtomicU32 = AtomicU32::new(feedback_value_10_14(SAMPLE_RATE_HZ));
 static CURRENT_FEEDBACK_VALUE_10_14: AtomicU32 =
@@ -76,19 +78,23 @@ pub struct UsbAudioClass {
     streaming_interface: InterfaceNumber,
 }
 
+// USB Audio の bSubslotSize を求めるため、ビット数から必要 byte 数へ丸める。
 const fn bytes_per_sample(bits_per_sample: u8) -> usize {
     (bits_per_sample as usize).div_ceil(8)
 }
 
+// この実装では 16/24-bit どちらも I2S 32-bit スロットを 1 ワードで扱う。
 const fn i2s_words_per_sample(bits_per_sample: u8) -> usize {
     let _ = bits_per_sample;
     1
 }
 
+// Full-Speed 等時 OUT は 1ms ごとの最大転送量で wMaxPacketSize を決める。
 const fn usb_packet_size(bits_per_sample: u8, sample_rate_hz: u32) -> usize {
     sample_rate_hz.div_ceil(1_000) as usize * CHANNEL_COUNT * bytes_per_sample(bits_per_sample)
 }
 
+// USB 1 パケットぶんが I2S 側で何ワードになるかを事前に計算しておく。
 pub const fn i2s_words_per_usb_packet(bits_per_sample: u8, sample_rate_hz: u32) -> usize {
     sample_rate_hz.div_ceil(1_000) as usize * CHANNEL_COUNT * i2s_words_per_sample(bits_per_sample)
 }
@@ -102,6 +108,7 @@ fn supports_sample_rate(sample_rate_hz: u32) -> bool {
     SUPPORTED_SAMPLE_RATES_HZ.contains(&sample_rate_hz)
 }
 
+// Alt Setting ごとのビット幅とクロック設定の組み合わせが許容範囲か判定する。
 pub fn supports_stream_format(bits_per_sample: u8, sample_rate_hz: u32) -> bool {
     match bits_per_sample {
         BITS_PER_SAMPLE_16 => supports_sample_rate(sample_rate_hz),
@@ -127,6 +134,7 @@ pub fn current_i2s_packet_words() -> usize {
     i2s_words_per_usb_packet(current_bits_per_sample(), current_sample_rate_hz())
 }
 
+// FIFO は「何パケットぶん貯めたいか」で管理し、サンプルレート変更時も追従させる。
 pub fn feedback_target_level_words(packet_words: usize) -> usize {
     packet_words.saturating_mul(FIFO_TARGET_PACKETS)
 }
@@ -147,6 +155,7 @@ pub fn current_feedback_correction_10_14() -> i32 {
     current_feedback_value_10_14() as i32 - BASE_FEEDBACK_VALUE_10_14.load(Ordering::Relaxed) as i32
 }
 
+// サンプルレート切り替え直後や停止時に、補正の積み残しを消して基準値へ戻す。
 pub fn reset_feedback_control(base_feedback_value_10_14: u32) {
     BASE_FEEDBACK_VALUE_10_14.store(base_feedback_value_10_14, Ordering::Relaxed);
     CURRENT_FEEDBACK_VALUE_10_14.store(base_feedback_value_10_14, Ordering::Relaxed);
@@ -157,6 +166,7 @@ pub fn update_feedback_control(
     packet_words: usize,
     base_feedback_value_10_14: u32,
 ) -> u32 {
+    // I2S 実クロックから得た基準値を毎回更新し、FIFO 水位ぶんだけ上下に補正する。
     BASE_FEEDBACK_VALUE_10_14.store(base_feedback_value_10_14, Ordering::Relaxed);
 
     let packet_frames = (packet_words / CHANNEL_COUNT).max(1) as i32;
@@ -164,6 +174,7 @@ pub fn update_feedback_control(
     let deadband_words = packet_words.saturating_mul(FIFO_CONTROL_DEADBAND_PACKETS);
     let fifo_error_words = target_words as i32 - fifo_level_words as i32;
 
+    // 目標水位より低ければホスト送出を少し速く、高ければ少し遅く誘導する。
     let target_correction = if fifo_error_words.unsigned_abs() as usize <= deadband_words {
         0
     } else {
@@ -176,6 +187,7 @@ pub fn update_feedback_control(
 
     let target_feedback = (base_feedback_value_10_14 as i32 + target_correction).max(0) as u32;
     let current_feedback = CURRENT_FEEDBACK_VALUE_10_14.load(Ordering::Relaxed);
+    // 急激に値を変えるとホスト側の追従が不安定になるため、1 ステップずつ近づける。
     let next_feedback = if current_feedback < target_feedback {
         current_feedback.saturating_add(
             (target_feedback - current_feedback).min(FEEDBACK_SMOOTHING_STEP_10_14 as u32),
@@ -190,16 +202,19 @@ pub fn update_feedback_control(
     next_feedback
 }
 
+// 制御要求から受け取ったサンプルレートを共有状態へ反映する。
 fn update_sample_rate(sample_rate_hz: u32) -> bool {
     let previous = CURRENT_SAMPLE_RATE_HZ.swap(sample_rate_hz, Ordering::Relaxed);
     previous != sample_rate_hz
 }
 
+// Alt Setting 切り替えに応じて 16-bit / 24-bit のどちらかを記録する。
 fn update_stream_format(bits_per_sample: u8) -> bool {
     let previous = CURRENT_BITS_PER_SAMPLE.swap(bits_per_sample, Ordering::Relaxed);
     previous != bits_per_sample
 }
 
+// main 側の再設定処理を起こすために世代番号をインクリメントする。
 fn note_stream_config_change() {
     STREAM_CONFIG_VERSION.fetch_add(1, Ordering::Relaxed);
 }
@@ -218,6 +233,7 @@ impl UsbAudioClass {
         D::EndpointOut: EndpointOut,
         D::EndpointIn: EndpointIn,
     {
+        // 1 つの Audio Function の中に AudioControl と AudioStreaming を構成する。
         let mut func = builder.function(USB_CLASS_AUDIO, 0x00, USB_PROTOCOL_IP_02_00);
 
         let mut ac_interface = func.interface();
@@ -342,6 +358,7 @@ impl UsbAudioClass {
             USB_PACKET_SIZE_16 as u16,
             1,
         );
+        // OUT と feedback を Alt 1/2 で分けることで 16-bit と 24-bit を独立して列挙する。
         let feedback_endpoint_16 = as_alt_16.alloc_endpoint_in(
             embassy_usb_driver::EndpointType::Isochronous,
             None,
@@ -412,6 +429,7 @@ impl UsbAudioClass {
             FEEDBACK_PACKET_SIZE,
             1,
         );
+        // 24-bit 側も 16-bit と同じく非同期 OUT + 明示的フィードバック構成にする。
         as_alt_24.endpoint_descriptor(
             stream_endpoint_24.info(),
             SynchronizationType::Asynchronous,
@@ -441,6 +459,7 @@ impl UsbAudioClass {
 
 impl Handler for UsbAudioClass {
     fn control_out(&mut self, req: Request, buf: &[u8]) -> Option<OutResponse> {
+        // ホストからの SET_CUR は AudioControl Interface の Clock Source だけを受け付ける。
         if req.request_type != RequestType::Class || req.recipient != Recipient::Interface {
             return None;
         }
@@ -462,6 +481,7 @@ impl Handler for UsbAudioClass {
 
         let sample_rate_hz = u32::from_le_bytes(buf[..CLOCK_FREQUENCY_BYTES].try_into().unwrap());
         let bits_per_sample = current_bits_per_sample();
+        // 現在有効な Alt Setting で扱えないレートは拒否する。
         if !supports_stream_format(bits_per_sample, sample_rate_hz) {
             return Some(OutResponse::Rejected);
         }
@@ -473,6 +493,7 @@ impl Handler for UsbAudioClass {
     }
 
     fn control_in<'a>(&'a mut self, req: Request, buf: &'a mut [u8]) -> Option<InResponse<'a>> {
+        // GET_CUR / GET_RANGE も同じ Clock Source にだけ応答する。
         if req.request_type != RequestType::Class || req.recipient != Recipient::Interface {
             return None;
         }
@@ -532,6 +553,7 @@ impl Handler for UsbAudioClass {
     fn set_alternate_setting(&mut self, iface: InterfaceNumber, alternate: u8) {
         if iface == self.streaming_interface {
             let mut changed = false;
+            // Alt 0=停止、Alt 1=16-bit、Alt 2=24-bit として扱う。
             let active = matches!(alternate, 1 | 2);
 
             if active {
@@ -543,6 +565,7 @@ impl Handler for UsbAudioClass {
                 changed |= update_stream_format(bits_per_sample);
 
                 if !supports_stream_format(bits_per_sample, current_sample_rate_hz()) {
+                    // 24-bit/16-bit の切り替え後に無効なレートが残っていたら既定値へ戻す。
                     changed |= update_sample_rate(SAMPLE_RATE_HZ);
                 }
             }
@@ -555,6 +578,7 @@ impl Handler for UsbAudioClass {
     }
 
     fn reset(&mut self) {
+        // USB バスリセット後は列挙直後の既定状態へ戻す。
         STREAM_ACTIVE.store(false, Ordering::Relaxed);
         let mut changed = false;
         changed |= update_stream_format(BITS_PER_SAMPLE_16);
