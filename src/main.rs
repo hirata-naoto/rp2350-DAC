@@ -175,10 +175,10 @@ async fn main(_spawner: Spawner) {
     usb_config.manufacturer = Some("hirata-naoto");
     usb_config.product = Some("XIAO RP2350 USB Audio to I2S");
     usb_config.serial_number = Some("0001");
-    usb_config.device_class = 0x00;
-    usb_config.device_sub_class = 0x00;
-    usb_config.device_protocol = 0x00;
-    usb_config.composite_with_iads = false;
+    usb_config.device_class = 0xEF;
+    usb_config.device_sub_class = 0x02;
+    usb_config.device_protocol = 0x01;
+    usb_config.composite_with_iads = true;
     usb_config.max_power = 100;
     usb_config.max_packet_size_0 = 64;
 
