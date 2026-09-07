@@ -36,6 +36,7 @@ const CS_ENDPOINT: u8 = 0x25;
 const AC_HEADER: u8 = 0x01;
 const AC_INPUT_TERM: u8 = 0x02;
 const AC_OUTPUT_TERM: u8 = 0x03;
+const AC_FEATURE_UNIT: u8 = 0x06;
 const AC_CLOCK_SOURCE: u8 = 0x0A;
 
 const AS_GENERAL: u8 = 0x01;
@@ -44,7 +45,8 @@ const EP_GENERAL: u8 = 0x01;
 
 const CLOCK_SOURCE_ID: u8 = 0x10;
 const INPUT_TERM_ID: u8 = 0x11;
-const OUTPUT_TERM_ID: u8 = 0x12;
+const FEATURE_UNIT_ID: u8 = 0x12;
+const OUTPUT_TERM_ID: u8 = 0x13;
 
 const FUNCTION_CATEGORY_DESKTOP_SPEAKER: u8 = 0x01;
 const TERM_USB_STREAMING: u16 = 0x0101;
@@ -245,8 +247,8 @@ impl UsbAudioClass {
             None,
         );
 
-        const AC_TOTAL_LENGTH: u16 = 46;
-        // AudioControl 側ではクロック源と入出力ターミナルだけを最小構成で公開する。
+        const AC_TOTAL_LENGTH: u16 = 64;
+        // AudioControl 側では Windows 互換性のため Feature Unit を含む最小構成で公開する。
         ac_alt.descriptor(
             CS_INTERFACE,
             &[
@@ -293,12 +295,33 @@ impl UsbAudioClass {
         ac_alt.descriptor(
             CS_INTERFACE,
             &[
+                AC_FEATURE_UNIT,
+                FEATURE_UNIT_ID,
+                INPUT_TERM_ID,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+            ],
+        );
+        ac_alt.descriptor(
+            CS_INTERFACE,
+            &[
                 AC_OUTPUT_TERM,
                 OUTPUT_TERM_ID,
                 (TERM_SPEAKER & 0xff) as u8,
                 (TERM_SPEAKER >> 8) as u8,
                 0x00,
-                INPUT_TERM_ID,
+                FEATURE_UNIT_ID,
                 CLOCK_SOURCE_ID,
                 0x00,
                 0x00,
