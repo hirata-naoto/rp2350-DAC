@@ -52,7 +52,7 @@ const TERM_SPEAKER: u16 = 0x0301;
 const CHANNEL_CONFIG_FL_FR: u32 = 0x0000_0003;
 const PCM_FORMAT_I: u32 = 0x0000_0001;
 const FEEDBACK_REFRESH_PERIOD: u8 = 1;
-const FEEDBACK_PACKET_SIZE: u16 = 3;
+const FEEDBACK_PACKET_SIZE: u16 = 4;
 const FEEDBACK_SMOOTHING_STEP_10_14: i32 = 16;
 const FEEDBACK_MAX_CORRECTION_10_14: i32 = 512;
 const FEEDBACK_ERROR_GAIN_10_14: i32 = 128;
@@ -125,9 +125,9 @@ pub fn current_bits_per_sample() -> u8 {
     CURRENT_BITS_PER_SAMPLE.load(Ordering::Relaxed)
 }
 
-pub fn current_feedback_packet() -> [u8; 3] {
+pub fn current_feedback_packet() -> [u8; 4] {
     let bytes = current_feedback_value_10_14().to_le_bytes();
-    [bytes[0], bytes[1], bytes[2]]
+    [bytes[0], bytes[1], bytes[2], 0]
 }
 
 pub fn current_i2s_packet_words() -> usize {
@@ -373,7 +373,7 @@ impl UsbAudioClass {
             &[0x00, feedback_endpoint_16.info().addr.into()],
         );
         as_alt_16.descriptor(CS_ENDPOINT, &[EP_GENERAL, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        // Full-Speed の 10.14 フィードバック値を 3 byte で返す。
+        // Full-Speed の 10.14 フィードバック値を 4 byte で返す（4th byte は 0）。
         as_alt_16.endpoint_descriptor(
             feedback_endpoint_16.info(),
             SynchronizationType::NoSynchronization,
