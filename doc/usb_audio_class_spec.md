@@ -22,7 +22,7 @@
 | Feature Unit | 0x12 | 入力元 0x11、Windows互換性のため 0ch/各ch の controls は未実装 |
 | Output Terminal | 0x13 | Speaker (0x0301)、入力元 0x12、Clock 0x10 |
 
-## エンドポイント（Alt 1 / Alt 2 共通構成）
+## エンドポイント
 
 | Alt | ビット幅 | wMaxPacketSize | エンドポイント | 方向/転送種別 | 同期 |
 |---|---|---|---|---|---|
