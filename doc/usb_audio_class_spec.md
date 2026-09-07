@@ -19,16 +19,17 @@
 |---|---|---|
 | Clock Source | 0x10 | Internal Programmable、周波数RW/Validity RO |
 | Input Terminal | 0x11 | USB Streaming (0x0101)、2ch (FL/FR)、Clock 0x10 |
-| Output Terminal | 0x12 | Speaker (0x0301)、入力元 0x11、Clock 0x10 |
+| Feature Unit | 0x12 | 入力元 0x11、Windows互換性のため 0ch/各ch の controls は未実装 |
+| Output Terminal | 0x13 | Speaker (0x0301)、入力元 0x12、Clock 0x10 |
 
 ## エンドポイント（Alt 1 / Alt 2 共通構成）
 
 | Alt | ビット幅 | wMaxPacketSize | エンドポイント | 方向/転送種別 | 同期 |
 |---|---|---|---|---|---|
 | 1 | 16-bit | 384 bytes (96kHz時) | Stream EP | OUT / Isochronous | Asynchronous |
-| 1 | 16-bit | 3 bytes | Feedback EP | IN / Isochronous | Feedback (10.14固定小数点) |
+| 1 | 16-bit | 4 bytes | Feedback EP | IN / Isochronous | Feedback (10.14固定小数点、上位1byteは0) |
 | 2 | 24-bit | 576 bytes (96kHz時) | Stream EP | OUT / Isochronous | Asynchronous |
-| 2 | 24-bit | 3 bytes | Feedback EP | IN / Isochronous | Feedback (10.14固定小数点) |
+| 2 | 24-bit | 4 bytes | Feedback EP | IN / Isochronous | Feedback (10.14固定小数点、上位1byteは0) |
 
 wMaxPacketSize の算出式: `ceil(sample_rate/1000) × channels(2) × bytes_per_sample`（96kHzを基準に確保）
 
