@@ -5,10 +5,13 @@
 | # | インターフェース | Alt Setting | Class/Subclass/Protocol | 内容 |
 |---|---|---|---|---|
 | Function | Audio Function | - | 0x01 / 0x00 / 0x20 (IP_VERSION_02_00) | Desktop Speaker カテゴリ |
+| IAD | Interface Association | IF0-1 | 0x01 / 0x00 / 0x20 | AudioControl + AudioStreaming を 1 つの Audio Function として束ねる |
 | IF0 | AudioControl (AC) | Alt 0 | 0x01 / 0x01 / 0x20 | Clock Source, Input/Output Terminal |
 | IF1 | AudioStreaming (AS) | Alt 0 | 0x01 / 0x02 / 0x20 | ゼロバンド幅（帯域未使用） |
 | IF1 | AudioStreaming (AS) | Alt 1 | 0x01 / 0x02 / 0x20 | 16-bit PCM ストリーミング |
 | IF1 | AudioStreaming (AS) | Alt 2 | 0x01 / 0x02 / 0x20 | 24-bit PCM ストリーミング |
+
+デバイスディスクリプタは IAD 付き composite device として `0xEF / 0x02 / 0x01` を使用する。
 
 ## AudioControl エンティティ
 
