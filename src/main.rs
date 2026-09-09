@@ -1,3 +1,17 @@
+//! XIAO RP2350 を USB Audio Class 2.0 のステレオ DAC として動作させるエントリポイント。
+//!
+//! 標準ライブラリとヒープを使わず、Embassy の非同期実行環境で USB 制御、16-bit/24-bit
+//! PCM 受信、I2S 再生、各形式の明示的フィードバック送信を協調実行する。
+//! 対応レートは 44.1/48/88.2/96 kHz。USB の little-endian PCM を左右順の
+//! 32-bit 左詰め I2S ワードへ変換し、共有リング FIFO を経由して PIO0/SM0 と DMA_CH0 へ渡す。
+//! 外部 DAC への出力は DOUT=GPIO26、BCLK=GPIO27、LRCLK=GPIO28 とする。
+//!
+//! FIFO あふれ時は最古のデータを破棄し、不足時や停止中は無音を出力する。
+//! 再生開始前は所定水位まで蓄積し、再生中は FIFO 水位と I2S 実効クロックから
+//! USB フィードバックを更新する。形式・レートの世代変更を検出すると FIFO を消去し、
+//! I2S とフィードバックを再設定する。USB 記述子・制御要求は audio、
+//! PIO の波形生成・DMA 送信は i2s に委譲し、本モジュールがデータの流れを管理する。
+
 #![no_std]
 #![no_main]
 
@@ -30,22 +44,32 @@ bind_interrupts!(struct Irqs {
 // 1ms ごとの最大 USB パケットを 32 個ぶん貯められる深さをソフト FIFO に確保する。
 const AUDIO_FIFO_CAPACITY_WORDS: usize = audio::MAX_I2S_PACKET_WORDS * 32;
 
+// USB 受信処理と再生処理が排他的に読み書きする、I2S ワード単位の共有 FIFO。
 static AUDIO_FIFO: Mutex<CriticalSectionRawMutex, AudioSampleFifo<AUDIO_FIFO_CAPACITY_WORDS>> =
     Mutex::new(AudioSampleFifo::new());
+// USB デバイスの存続期間中、クラス制御ハンドラを固定アドレスに保持する領域。
 static AUDIO_HANDLER: StaticCell<audio::UsbAudioClass> = StaticCell::new();
+// USB 構成記述子を構築・保持する 256 バイトの静的領域。
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+// USB BOS（デバイス能力）記述子用の 64 バイトの静的領域。
 static BOS_DESCRIPTOR: StaticCell<[u8; 64]> = StaticCell::new();
+// エンドポイント 0 の制御転送で要求・応答データを扱う 64 バイトの作業領域。
 static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
 // USB 受信と I2S 送信の間に挟む単純なリングバッファ。
 // オーバーフロー時は古いサンプルを捨て、アンダーフロー時は呼び出し側で無音を補う。
+// N は正のワード数とし、ステレオの左右ペアを保つため使用側では偶数単位で操作する。
 struct AudioSampleFifo<const N: usize> {
+    // 1 要素が 1 チャンネルの 32-bit I2S スロットに相当する固定長の保存領域。
     data: [u32; N],
+    // 次に取り出す最古のワードの添字。
     read: usize,
+    // 現在格納している有効ワード数（0..=N）。
     len: usize,
 }
 
 impl<const N: usize> AudioSampleFifo<N> {
+    // 全領域をゼロ初期化し、静的初期化にも使用できる空の FIFO を生成する。
     const fn new() -> Self {
         Self {
             data: [0; N],
@@ -54,11 +78,14 @@ impl<const N: usize> AudioSampleFifo<N> {
         }
     }
 
+    // 読み出し位置と有効長を初期化する。保存領域の値そのものは消去しない。
     fn clear(&mut self) {
         self.read = 0;
         self.len = 0;
     }
 
+    // 入力を順番に追加する。容量不足時は最古のワードを捨てて新しいデータを優先する。
+    // 入力が容量以上なら末尾 N ワードだけを保持し、空入力では何も変更しない。
     fn push_slice(&mut self, words: &[u32]) {
         // 一度に容量以上が来た場合は最新の N ワードだけを残す。
         if words.len() >= N {
@@ -79,6 +106,8 @@ impl<const N: usize> AudioSampleFifo<N> {
         }
     }
 
+    // 最古から out の長さまで取り出し、実際に書き込んだワード数を返す。
+    // FIFO が不足する場合、out の残りは変更しないため呼び出し側で無音を補う。
     fn pop_slice(&mut self, out: &mut [u32]) -> usize {
         let count = out.len().min(self.len);
         for slot in out.iter_mut().take(count) {
@@ -87,22 +116,26 @@ impl<const N: usize> AudioSampleFifo<N> {
         count
     }
 
+    // 最古のワードを最大 count 個破棄する。有効長を超える指定は全件破棄に制限する。
     fn discard_oldest(&mut self, count: usize) {
         let discard = count.min(self.len);
         self.read = (self.read + discard) % N;
         self.len -= discard;
     }
 
+    // 現在読み出せる I2S ワード数を返す（ステレオフレーム数ではない）。
     fn len(&self) -> usize {
         self.len
     }
 
+    // 末尾に 1 ワード追加する内部操作。呼び出し側で空き容量があることを保証する。
     fn write_word(&mut self, word: u32) {
         let write = (self.read + self.len) % N;
         self.data[write] = word;
         self.len += 1;
     }
 
+    // 先頭の 1 ワードを取り出して読み出し位置を進める。空でないことが前提。
     fn read_word(&mut self) -> u32 {
         let word = self.data[self.read];
         self.read = (self.read + 1) % N;
@@ -112,6 +145,7 @@ impl<const N: usize> AudioSampleFifo<N> {
 }
 
 // USB の 24-bit packed little-endian PCM を、I2S 32-bit 左詰めスロットへ変換する。
+// 入力の先頭 3 バイトを符号拡張してから 8 ビット左シフトする。入力長は 3 以上が前提。
 fn pcm24_to_i2s_slot(sample_bytes: &[u8]) -> u32 {
     let sign = if (sample_bytes[2] & 0x80) != 0 {
         0xff
@@ -123,6 +157,9 @@ fn pcm24_to_i2s_slot(sample_bytes: &[u8]) -> u32 {
 }
 
 // USB で受けた PCM フレーム列を、PIO へそのまま送れる I2S ワード列へ展開する。
+// 16-bit は 4 バイト、24-bit は 6 バイトを左右 1 フレームとして扱い、書き込んだ
+// ワード数を返す。端数バイトと出力に収まらないフレームは捨て、未対応ビット幅は 0 を返す。
+// 出力の未使用部分は変更せず、左右ペアが揃う範囲のみ変換する。
 fn bytes_to_i2s_words(bytes: &[u8], bits_per_sample: u8, out: &mut [u32]) -> usize {
     match bits_per_sample {
         audio::BITS_PER_SAMPLE_16 => {
@@ -156,6 +193,9 @@ fn bytes_to_i2s_words(bytes: &[u8], bits_per_sample: u8, out: &mut [u32]) -> usi
     }
 }
 
+// 周辺機器、USB 記述子、静的バッファと I2S を初期化し、6 個の非同期処理を並行駆動する。
+// Spawner に別タスクは登録せず join で実行し、通常は終了しない。
+// 起動時は 48 kHz/16-bit を既定とし、無音を先行投入してから I2S を開始する。
 #[embassy_executor::main(
     executor = "embassy_rp::executor::Executor",
     entry = "cortex_m_rt::entry"
@@ -226,7 +266,9 @@ async fn main(_spawner: Spawner) {
     i2s.prime(&silence[..initial_packet_words]);
     i2s.start();
 
+    // USB バスイベントと制御要求を継続処理するデバイス側の実行ループ。
     let usb_fut = usb.run();
+    // Alt 1 の有効化を待って 16-bit PCM を受信し、有効化・無効化時に FIFO を消去する。
     let receive_16_fut = async {
         let mut packet = [0u8; audio::USB_PACKET_SIZE_16];
         let mut words = [0u32; audio::MAX_I2S_PACKET_WORDS];
@@ -264,6 +306,7 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
+    // Alt 2 から packed 24-bit PCM を受信し、16-bit 側と同じ共有 FIFO へ格納する。
     let receive_24_fut = async {
         let mut packet = [0u8; audio::USB_PACKET_SIZE_24];
         let mut words = [0u32; audio::MAX_I2S_PACKET_WORDS];
@@ -299,6 +342,7 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
+    // 設定世代と FIFO 水位を監視し、無音補完・開始待ち・フィードバック更新後に DMA 送信する。
     let playback_fut = async {
         let mut chunk = [0u32; audio::MAX_I2S_PACKET_WORDS];
         let mut config_version = audio::stream_config_version();
@@ -419,6 +463,7 @@ async fn main(_spawner: Spawner) {
             i2s.write_words(&chunk[..packet_words]).await;
         }
     };
+    // Alt 1 の IN エンドポイントへ最新の 4 バイト補正値を送り、無効化されたら待機に戻る。
     let feedback_16_fut = async {
         loop {
             // 16-bit ストリーム用の明示的フィードバックを 1ms 周期で返し続ける。
@@ -434,6 +479,7 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
+    // Alt 2 の IN エンドポイントへ共通の補正値を送る。送信間隔は USB 転送に従う。
     let feedback_24_fut = async {
         loop {
             // 24-bit ストリーム側も同じ制御値を別エンドポイントから返す。
