@@ -1,4 +1,4 @@
-//! USB Full-Speed の再生専用 USB Audio Class 2.0 インターフェースと共有制御状態。
+//! USB Full-Speed の再生専用 USB Audio Class 2.0 インターフェイスと共有制御状態。
 //!
 //! 対応形式は左右 2 チャネルの PCM Format I、16-bit（2 byte/sample）または
 //! packed 24-bit（3 byte/sample）、44.1 / 48 / 88.2 / 96 kHz。既定値は 16-bit / 48 kHz。
@@ -23,7 +23,7 @@
 //! Relaxed なアトミック変数で共有する。各値の読み書きは不可分だが、複数値の
 //! 一括スナップショットや他のメモリ操作との同期は保証しない。世代番号は周波数・
 //! ビット幅の変更を通知し、再生有効状態だけの変更では増えない。
-//! 本モジュールは記述子生成・エンドポイント確保・要求処理・補正計算を担う。
+//! 本モジュールはディスクリプタ生成・エンドポイント確保・要求処理・補正計算を担う。
 //! PCM の受信/変換、FIFO 管理、I2S/DMA の再設定、フィードバックの実送信は呼び出し元が担う。
 //! USB リセットは停止・既定形式へ戻すが、補正値のリセットは別途呼び出し元が行う。
 
@@ -64,36 +64,36 @@ static BASE_FEEDBACK_VALUE_10_14: AtomicU32 = AtomicU32::new(feedback_value_10_1
 static CURRENT_FEEDBACK_VALUE_10_14: AtomicU32 =
     AtomicU32::new(feedback_value_10_14(SAMPLE_RATE_HZ));
 
-// USB の Audio インターフェースクラスコード。
+// USB の Audio インターフェイスクラスコード。
 const USB_CLASS_AUDIO: u8 = 0x01;
-// AudioControl インターフェースのサブクラスコード。
+// AudioControl インターフェイスのサブクラスコード。
 const USB_SUBCLASS_AUDIO_CONTROL: u8 = 0x01;
-// AudioStreaming インターフェースのサブクラスコード。
+// AudioStreaming インターフェイスのサブクラスコード。
 const USB_SUBCLASS_AUDIO_STREAMING: u8 = 0x02;
-// Audio Class 2.0 を示すインターフェースプロトコルコード。
+// Audio Class 2.0 を示すインターフェイスプロトコルコード。
 const USB_PROTOCOL_IP_02_00: u8 = 0x20;
 
-// クラス固有インターフェース記述子の種別。
+// クラス固有インターフェイスディスクリプタの種別。
 const CS_INTERFACE: u8 = 0x24;
-// クラス固有エンドポイント記述子の種別。
+// クラス固有エンドポイントディスクリプタの種別。
 const CS_ENDPOINT: u8 = 0x25;
 
-// AudioControl ヘッダー記述子のサブタイプ。
+// AudioControl ヘッダーディスクリプタのサブタイプ。
 const AC_HEADER: u8 = 0x01;
-// AudioControl Input Terminal 記述子のサブタイプ。
+// AudioControl Input Terminal ディスクリプタのサブタイプ。
 const AC_INPUT_TERM: u8 = 0x02;
-// AudioControl Output Terminal 記述子のサブタイプ。
+// AudioControl Output Terminal ディスクリプタのサブタイプ。
 const AC_OUTPUT_TERM: u8 = 0x03;
-// AudioControl Feature Unit 記述子のサブタイプ。
+// AudioControl Feature Unit ディスクリプタのサブタイプ。
 const AC_FEATURE_UNIT: u8 = 0x06;
-// AudioControl Clock Source 記述子のサブタイプ。
+// AudioControl Clock Source ディスクリプタのサブタイプ。
 const AC_CLOCK_SOURCE: u8 = 0x0A;
 
-// AudioStreaming General 記述子のサブタイプ。
+// AudioStreaming General ディスクリプタのサブタイプ。
 const AS_GENERAL: u8 = 0x01;
-// AudioStreaming Format Type 記述子のサブタイプ。
+// AudioStreaming Format Type ディスクリプタのサブタイプ。
 const AS_FORMAT_TYPE: u8 = 0x02;
-// AudioStreaming クラス固有エンドポイント記述子の General サブタイプ。
+// AudioStreaming クラス固有エンドポイントディスクリプタの General サブタイプ。
 const EP_GENERAL: u8 = 0x01;
 
 // 両 Terminal が参照し、クロック制御要求の宛先になるエンティティ ID。
@@ -115,7 +115,7 @@ const TERM_SPEAKER: u16 = 0x0301;
 const CHANNEL_CONFIG_FL_FR: u32 = 0x0000_0003;
 // Format I の対応形式ビットマップにおける PCM ビット。
 const PCM_FORMAT_I: u32 = 0x0000_0001;
-// フィードバック記述子の bRefresh 値。転送間隔 bInterval とは別のフィールド。
+// フィードバックディスクリプタの bRefresh 値。転送間隔 bInterval とは別のフィールド。
 const FEEDBACK_REFRESH_PERIOD: u8 = 1;
 // フィードバック IN の最大パケット長（byte）。第 4 byte は 0 として送る。
 const FEEDBACK_PACKET_SIZE: u16 = 4;
@@ -157,12 +157,12 @@ const CLOCK_VALIDITY_BYTES: usize = core::mem::size_of::<u8>();
 // 16-bit / 24-bit の両形式で受け付け、GET_RANGE でも公開する周波数（Hz）。
 const SUPPORTED_SAMPLE_RATES_HZ: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
 
-// USB 要求の振り分けに必要なインターフェース番号を保持するハンドラー。
+// USB 要求の振り分けに必要なインターフェイス番号を保持するハンドラー。
 // エンドポイント自体は保持せず、生成時に呼び出し元へ返す。
 pub struct UsbAudioClass {
-    // Clock Source のクラス制御要求を受ける AudioControl インターフェース番号。
+    // Clock Source のクラス制御要求を受ける AudioControl インターフェイス番号。
     ac_interface: InterfaceNumber,
-    // Alt Setting の変更で再生状態を更新する AudioStreaming インターフェース番号。
+    // Alt Setting の変更で再生状態を更新する AudioStreaming インターフェイス番号。
     streaming_interface: InterfaceNumber,
 }
 
@@ -337,7 +337,7 @@ fn note_stream_config_change() {
 }
 
 impl UsbAudioClass {
-    // Builder に UAC2 の記述子と 2 形式分の等時エンドポイントを追加する。
+    // Builder に UAC2 のディスクリプタと 2 形式分の等時エンドポイントを追加する。
     // 戻り値はハンドラー、16-bit OUT/feedback IN、24-bit OUT/feedback IN の順。
     // 共有状態の初期化やハンドラー登録、転送開始は行わず、確保処理の失敗は Builder 側に従う。
     pub fn new<'d, D: Driver<'d>>(
@@ -365,7 +365,7 @@ impl UsbAudioClass {
             None,
         );
 
-        // AC ヘッダーから Output Terminal までのクラス固有記述子の合計長（byte）。
+        // AC ヘッダーから Output Terminal までのクラス固有ディスクリプタの合計長（byte）。
         const AC_TOTAL_LENGTH: u16 = 64;
         // AudioControl 側では Windows 互換性のため Feature Unit を含む最小構成で公開する。
         ac_alt.descriptor(
@@ -600,7 +600,7 @@ impl UsbAudioClass {
 }
 
 impl Handler for UsbAudioClass {
-    // Class/Interface 宛て OUT 要求を処理し、対象外インターフェース等は None で委譲する。
+    // Class/Interface 宛て OUT 要求を処理し、対象外インターフェイス等は None で委譲する。
     // 本 AC 宛てでは Clock Source のマスター周波数 SET_CUR だけを受け付ける。
     // buf の先頭 4 byte をリトルエンディアン Hz として読み、余剰 byte は無視する。
     // 短いデータ・未対応形式/要求は拒否し、受理した値が変わった場合だけ設定世代を進める。
@@ -700,7 +700,7 @@ impl Handler for UsbAudioClass {
         }
     }
 
-    // 本 Streaming インターフェースの Alt 通知だけを処理し、それ以外は無視する。
+    // 本 Streaming インターフェイスの Alt 通知だけを処理し、それ以外は無視する。
     // Alt 1/2 でビット幅と再生有効状態を更新し、非対応レートなら既定 Hz に戻す。
     // その他の Alt は停止扱いで形式を保持する。形式/Hz が変わった場合だけ世代を進め、
     // 有効状態のみの変更では進めない。フィードバック値やハードウェアは直接変更しない。
