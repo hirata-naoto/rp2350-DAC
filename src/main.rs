@@ -9,7 +9,7 @@
 //! FIFO あふれ時は最古のデータを破棄し、不足時や停止中は無音を出力する。
 //! 再生開始前は所定水位まで蓄積し、再生中は FIFO 水位と I2S 実効クロックから
 //! USB フィードバックを更新する。形式・レートの世代変更を検出すると FIFO を消去し、
-//! I2S とフィードバックを再設定する。USB 記述子・制御要求は audio、
+//! I2S とフィードバックを再設定する。USB ディスクリプタ・制御要求は audio、
 //! PIO の波形生成・DMA 送信は i2s に委譲し、本モジュールがデータの流れを管理する。
 
 #![no_std]
@@ -49,9 +49,9 @@ static AUDIO_FIFO: Mutex<CriticalSectionRawMutex, AudioSampleFifo<AUDIO_FIFO_CAP
     Mutex::new(AudioSampleFifo::new());
 // USB デバイスの存続期間中、クラス制御ハンドラを固定アドレスに保持する領域。
 static AUDIO_HANDLER: StaticCell<audio::UsbAudioClass> = StaticCell::new();
-// USB 構成記述子を構築・保持する 256 バイトの静的領域。
+// USB 構成ディスクリプタを構築・保持する 256 バイトの静的領域。
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
-// USB BOS（デバイス能力）記述子用の 64 バイトの静的領域。
+// USB BOS（デバイス能力）ディスクリプタ用の 64 バイトの静的領域。
 static BOS_DESCRIPTOR: StaticCell<[u8; 64]> = StaticCell::new();
 // エンドポイント 0 の制御転送で要求・応答データを扱う 64 バイトの作業領域。
 static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
@@ -193,7 +193,7 @@ fn bytes_to_i2s_words(bytes: &[u8], bits_per_sample: u8, out: &mut [u32]) -> usi
     }
 }
 
-// 周辺機器、USB 記述子、静的バッファと I2S を初期化し、6 個の非同期処理を並行駆動する。
+// 周辺機器、USB ディスクリプタ、静的バッファと I2S を初期化し、6 個の非同期処理を並行駆動する。
 // Spawner に別タスクは登録せず join で実行し、通常は終了しない。
 // 起動時は 48 kHz/16-bit を既定とし、無音を先行投入してから I2S を開始する。
 #[embassy_executor::main(
