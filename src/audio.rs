@@ -7,7 +7,8 @@
 //! Feature Unit は互換性のために列挙するが、音量・ミュート制御は公開しない。
 //! AudioStreaming の Alt 0 は帯域を使わない停止状態、Alt 1 は 16-bit、Alt 2 は 24-bit。
 //! 各有効 Alt は独立した非同期等時 OUT と明示的フィードバック IN を持ち、
-//! 1 ms の最大 OUT 容量は 96 kHz を基準に 384 / 576 byte として確保する。
+//! 1 ms の最大 OUT 容量は 96 kHz 公称値に 1 フレームぶんの余裕を足した
+//! 388 / 582 byte として確保する。
 //!
 //! 現実装のフィードバック転送は 4 byte で、下位 3 byte にリトルエンディアンの
 //! 10.14 固定小数点値（ステレオフレーム数/ms）、第 4 byte に 0 を格納する。
@@ -43,9 +44,9 @@ pub const CHANNEL_COUNT: usize = 2;
 pub const BITS_PER_SAMPLE_16: u8 = 16;
 // Alt 2 で公開する 1 チャネル当たりの有効ビット数（USB では 3 byte に詰める）。
 pub const BITS_PER_SAMPLE_24: u8 = 24;
-// 16-bit / 96 kHz の 1 ms 等時 OUT 最大サイズ（384 byte）。
+// 16-bit / 96 kHz の 1 ms 等時 OUT 最大サイズ（Windows 互換性のため 1 フレーム余裕込みで 388 byte）。
 pub const USB_PACKET_SIZE_16: usize = usb_packet_size(BITS_PER_SAMPLE_16, 96_000);
-// 24-bit / 96 kHz の 1 ms 等時 OUT 最大サイズ（576 byte）。
+// 24-bit / 96 kHz の 1 ms 等時 OUT 最大サイズ（Windows 互換性のため 1 フレーム余裕込みで 582 byte）。
 pub const USB_PACKET_SIZE_24: usize = usb_packet_size(BITS_PER_SAMPLE_24, 96_000);
 // 最大レートの USB 1 パケットを I2S へ展開したサイズ（32-bit ワード 192 個）。
 pub const MAX_I2S_PACKET_WORDS: usize = i2s_words_per_usb_packet(BITS_PER_SAMPLE_24, 96_000);
@@ -180,9 +181,11 @@ const fn i2s_words_per_sample(bits_per_sample: u8) -> usize {
 }
 
 // Full-Speed 等時 OUT は 1ms ごとの最大転送量で wMaxPacketSize を決める。
-// ビット幅と Hz から、フレーム数を切り上げたステレオ PCM の byte 数を返す。
+// 明示的フィードバックの揺らぎを吸収できるよう、Windows 互換性のため常に 1 フレーム余裕を持たせる。
+// ビット幅と Hz から、フレーム数を切り上げたステレオ PCM の byte 数へ 1 フレーム加えた値を返す。
 const fn usb_packet_size(bits_per_sample: u8, sample_rate_hz: u32) -> usize {
-    sample_rate_hz.div_ceil(1_000) as usize * CHANNEL_COUNT * bytes_per_sample(bits_per_sample)
+    let frame_bytes = CHANNEL_COUNT * bytes_per_sample(bits_per_sample);
+    sample_rate_hz.div_ceil(1_000) as usize * frame_bytes + frame_bytes
 }
 
 // USB 1 パケットぶんが I2S 側で何ワードになるかを事前に計算しておく。
@@ -464,7 +467,7 @@ impl UsbAudioClass {
             USB_PROTOCOL_IP_02_00,
             None,
         );
-        // Alt 1 は 16-bit 用。96 kHz でも FS の 1023 byte 制限内に収まる。
+        // Alt 1 は 16-bit 用。96 kHz 公称値に 1 フレーム足しても FS の 1023 byte 制限内に収まる。
         as_alt_16.descriptor(
             CS_INTERFACE,
             &[
@@ -529,7 +532,7 @@ impl UsbAudioClass {
             USB_PROTOCOL_IP_02_00,
             None,
         );
-        // Alt 2 は 24-bit packed PCM 用。96 kHz でも 576 byte/frame で FS 制限内に収まる。
+        // Alt 2 は 24-bit packed PCM 用。96 kHz 公称値に 1 フレーム足しても 582 byte で FS 制限内に収まる。
         as_alt_24.descriptor(
             CS_INTERFACE,
             &[
