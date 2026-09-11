@@ -194,7 +194,7 @@ fn bytes_to_i2s_words(bytes: &[u8], bits_per_sample: u8, out: &mut [u32]) -> usi
 }
 
 // 周辺機器、USB ディスクリプタ、静的バッファと I2S を初期化し、6 個の非同期処理を並行駆動する。
-// Spawner に別タスクは登録せず join で実行し、通常は終了しない。
+// Spawner に別タスクは登録せず Futureをjoin で実行し、通常は終了しない。
 // 起動時は 48 kHz/16-bit を既定とし、無音を先行投入してから I2S を開始する。
 #[embassy_executor::main(
     executor = "embassy_rp::executor::Executor",
@@ -204,8 +204,10 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("boot");
 
-    // USB デバイスと PIO ベースの I2S 送信器を初期化する。
+    // USB デバイスを初期化
     let driver = Driver::new(p.USB, Irqs);
+
+    // PIOベースのI2S送信器を初期化
     let Pio {
         mut common, sm0, ..
     } = Pio::new(p.PIO0, Irqs);
@@ -266,9 +268,13 @@ async fn main(_spawner: Spawner) {
     i2s.prime(&silence[..initial_packet_words]);
     i2s.start();
 
-    // USB バスイベントと制御要求を継続処理するデバイス側の実行ループ。
+
+    // 以下で6個のFuturesの作成
+    // Future USB バスイベントと制御要求を継続処理するデバイス側の実行ループ。
     let usb_fut = usb.run();
-    // Alt 1 の有効化を待って 16-bit PCM を受信し、有効化・無効化時に FIFO を消去する。
+
+
+    // Future Alt 1 の有効化を待って 16-bit PCM を受信し、有効化・無効化時に FIFO を消去する。
     let receive_16_fut = async {
         let mut packet = [0u8; audio::USB_PACKET_SIZE_16];
         let mut words = [0u32; audio::MAX_I2S_PACKET_WORDS];
@@ -306,7 +312,9 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
-    // Alt 2 から packed 24-bit PCM を受信し、16-bit 側と同じ共有 FIFO へ格納する。
+
+
+    // Future Alt 2 から packed 24-bit PCM を受信し、16-bit 側と同じ共有 FIFO へ格納する。
     let receive_24_fut = async {
         let mut packet = [0u8; audio::USB_PACKET_SIZE_24];
         let mut words = [0u32; audio::MAX_I2S_PACKET_WORDS];
@@ -342,7 +350,9 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
-    // 設定世代と FIFO 水位を監視し、無音補完・開始待ち・フィードバック更新後に DMA 送信する。
+
+
+    // Future 設定世代と FIFO 水位を監視し、無音補完・開始待ち・フィードバック更新後に DMA 送信する。
     let playback_fut = async {
         let mut chunk = [0u32; audio::MAX_I2S_PACKET_WORDS];
         let mut config_version = audio::stream_config_version();
@@ -463,7 +473,9 @@ async fn main(_spawner: Spawner) {
             i2s.write_words(&chunk[..packet_words]).await;
         }
     };
-    // Alt 1 の IN エンドポイントへ最新の 4 バイト補正値を送り、無効化されたら待機に戻る。
+
+
+    // Future Alt 1 の IN エンドポイントへ最新の 4 バイト補正値を送り、無効化されたら待機に戻る。
     let feedback_16_fut = async {
         loop {
             // 16-bit ストリーム用の明示的フィードバックを 1ms 周期で返し続ける。
@@ -479,7 +491,9 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
-    // Alt 2 の IN エンドポイントへ共通の補正値を送る。送信間隔は USB 転送に従う。
+
+
+    // Future Alt 2 の IN エンドポイントへ共通の補正値を送る。送信間隔は USB 転送に従う。
     let feedback_24_fut = async {
         loop {
             // 24-bit ストリーム側も同じ制御値を別エンドポイントから返す。
@@ -496,6 +510,7 @@ async fn main(_spawner: Spawner) {
         }
     };
 
+    // 6個のFutureをjoinで駆動
     join(
         usb_fut,
         join5(
