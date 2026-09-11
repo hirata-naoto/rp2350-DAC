@@ -189,10 +189,10 @@ fn bytes_to_i2s_words(bytes: &[u8], bits_per_sample: u8, out: &mut [u32]) -> usi
                     break;
                 }
 
-                out[count] =
-                    (u16::from_le_bytes([frame_bytes[0], frame_bytes[1]]) as u32) << I2S_SHIFT_BITS_16;
-                out[count + 1] =
-                    (u16::from_le_bytes([frame_bytes[2], frame_bytes[3]]) as u32) << I2S_SHIFT_BITS_16;
+                out[count] = (u16::from_le_bytes([frame_bytes[0], frame_bytes[1]]) as u32)
+                    << I2S_SHIFT_BITS_16;
+                out[count + 1] = (u16::from_le_bytes([frame_bytes[2], frame_bytes[3]]) as u32)
+                    << I2S_SHIFT_BITS_16;
                 count += 2;
             }
             count
@@ -290,11 +290,9 @@ async fn main(_spawner: Spawner) {
     i2s.prime(&silence[..initial_packet_words]);
     i2s.start();
 
-
     // 以下で6個のFuturesの作成
     // Future USB バスイベントと制御要求を継続処理するデバイス側の実行ループ。
     let usb_fut = usb.run();
-
 
     // Future Alt 1 の有効化を待って 16-bit PCM を受信し、有効化・無効化時に FIFO を消去する。
     let receive_16_fut = async {
@@ -335,7 +333,6 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-
     // Future Alt 2 から packed 24-bit PCM を受信し、16-bit 側と同じ共有 FIFO へ格納する。
     let receive_24_fut = async {
         let mut packet = [0u8; audio::USB_PACKET_SIZE_24];
@@ -372,7 +369,6 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
-
 
     // Future 設定世代と FIFO 水位を監視し、無音補完・開始待ち・フィードバック更新後に DMA 送信する。
     let playback_fut = async {
@@ -496,7 +492,6 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-
     // Future Alt 1 の IN エンドポイントへ最新の 4 バイト補正値を送り、無効化されたら待機に戻る。
     let feedback_16_fut = async {
         loop {
@@ -513,7 +508,6 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
-
 
     // Future Alt 2 の IN エンドポイントへ共通の補正値を送る。送信間隔は USB 転送に従う。
     let feedback_24_fut = async {
