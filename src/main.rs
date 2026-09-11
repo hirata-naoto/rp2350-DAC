@@ -42,7 +42,27 @@ bind_interrupts!(struct Irqs {
 });
 
 // 1ms ごとの最大 USB パケットを 32 個ぶん貯められる深さをソフト FIFO に確保する。
-const AUDIO_FIFO_CAPACITY_WORDS: usize = audio::MAX_I2S_PACKET_WORDS * 32;
+const AUDIO_FIFO_PACKETS: usize = 32;
+const AUDIO_FIFO_CAPACITY_WORDS: usize = audio::MAX_I2S_PACKET_WORDS * AUDIO_FIFO_PACKETS;
+const CONFIG_DESCRIPTOR_SIZE: usize = 256;
+const BOS_DESCRIPTOR_SIZE: usize = 64;
+const CONTROL_BUF_SIZE: usize = 64;
+const USB_VENDOR_ID: u16 = 0x1209;
+const USB_PRODUCT_ID: u16 = 0x2350;
+const USB_DEVICE_CLASS_MISCELLANEOUS: u8 = 0xEF;
+const USB_DEVICE_SUBCLASS_COMMON: u8 = 0x02;
+const USB_DEVICE_PROTOCOL_IAD: u8 = 0x01;
+const USB_MAX_POWER_MA: u16 = 100;
+const USB_CONTROL_MAX_PACKET_SIZE: u8 = 64;
+const PCM16_STEREO_FRAME_BYTES: usize = 4;
+const PCM24_SAMPLE_BYTES: usize = 3;
+const PCM24_STEREO_FRAME_BYTES: usize = PCM24_SAMPLE_BYTES * 2;
+const PCM24_SIGN_BIT_MASK: u8 = 0x80;
+const PCM24_SIGN_EXTEND_BYTE: u8 = 0xff;
+const PCM24_ZERO_EXTEND_BYTE: u8 = 0x00;
+const I2S_SHIFT_BITS_16: u32 = 16;
+const I2S_SHIFT_BITS_24: u32 = 8;
+const DIAGNOSTIC_LOG_INTERVAL_FRAMES: u16 = 1_000;
 
 // USB 受信処理と再生処理が排他的に読み書きする、I2S ワード単位の共有 FIFO。
 static AUDIO_FIFO: Mutex<CriticalSectionRawMutex, AudioSampleFifo<AUDIO_FIFO_CAPACITY_WORDS>> =
@@ -50,11 +70,11 @@ static AUDIO_FIFO: Mutex<CriticalSectionRawMutex, AudioSampleFifo<AUDIO_FIFO_CAP
 // USB デバイスの存続期間中、クラス制御ハンドラを固定アドレスに保持する領域。
 static AUDIO_HANDLER: StaticCell<audio::UsbAudioClass> = StaticCell::new();
 // USB 構成ディスクリプタを構築・保持する 256 バイトの静的領域。
-static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+static CONFIG_DESCRIPTOR: StaticCell<[u8; CONFIG_DESCRIPTOR_SIZE]> = StaticCell::new();
 // USB BOS（デバイス能力）ディスクリプタ用の 64 バイトの静的領域。
-static BOS_DESCRIPTOR: StaticCell<[u8; 64]> = StaticCell::new();
+static BOS_DESCRIPTOR: StaticCell<[u8; BOS_DESCRIPTOR_SIZE]> = StaticCell::new();
 // エンドポイント 0 の制御転送で要求・応答データを扱う 64 バイトの作業領域。
-static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+static CONTROL_BUF: StaticCell<[u8; CONTROL_BUF_SIZE]> = StaticCell::new();
 
 // USB 受信と I2S 送信の間に挟む単純なリングバッファ。
 // オーバーフロー時は古いサンプルを捨て、アンダーフロー時は呼び出し側で無音を補う。
@@ -147,13 +167,13 @@ impl<const N: usize> AudioSampleFifo<N> {
 // USB の 24-bit packed little-endian PCM を、I2S 32-bit 左詰めスロットへ変換する。
 // 入力の先頭 3 バイトを符号拡張してから 8 ビット左シフトする。入力長は 3 以上が前提。
 fn pcm24_to_i2s_slot(sample_bytes: &[u8]) -> u32 {
-    let sign = if (sample_bytes[2] & 0x80) != 0 {
-        0xff
+    let sign = if (sample_bytes[PCM24_SAMPLE_BYTES - 1] & PCM24_SIGN_BIT_MASK) != 0 {
+        PCM24_SIGN_EXTEND_BYTE
     } else {
-        0x00
+        PCM24_ZERO_EXTEND_BYTE
     };
     let sample = i32::from_le_bytes([sample_bytes[0], sample_bytes[1], sample_bytes[2], sign]);
-    (sample << 8) as u32
+    (sample << I2S_SHIFT_BITS_24) as u32
 }
 
 // USB で受けた PCM フレーム列を、PIO へそのまま送れる I2S ワード列へ展開する。
@@ -164,27 +184,29 @@ fn bytes_to_i2s_words(bytes: &[u8], bits_per_sample: u8, out: &mut [u32]) -> usi
     match bits_per_sample {
         audio::BITS_PER_SAMPLE_16 => {
             let mut count = 0;
-            for frame_bytes in bytes.chunks_exact(4) {
+            for frame_bytes in bytes.chunks_exact(PCM16_STEREO_FRAME_BYTES) {
                 if count + 1 >= out.len() {
                     break;
                 }
 
-                out[count] = (u16::from_le_bytes([frame_bytes[0], frame_bytes[1]]) as u32) << 16;
-                out[count + 1] =
-                    (u16::from_le_bytes([frame_bytes[2], frame_bytes[3]]) as u32) << 16;
+                out[count] = (u16::from_le_bytes([frame_bytes[0], frame_bytes[1]]) as u32)
+                    << I2S_SHIFT_BITS_16;
+                out[count + 1] = (u16::from_le_bytes([frame_bytes[2], frame_bytes[3]]) as u32)
+                    << I2S_SHIFT_BITS_16;
                 count += 2;
             }
             count
         }
         audio::BITS_PER_SAMPLE_24 => {
             let mut count = 0;
-            for frame_bytes in bytes.chunks_exact(6) {
+            for frame_bytes in bytes.chunks_exact(PCM24_STEREO_FRAME_BYTES) {
                 if count + 1 >= out.len() {
                     break;
                 }
 
-                out[count] = pcm24_to_i2s_slot(&frame_bytes[..3]);
-                out[count + 1] = pcm24_to_i2s_slot(&frame_bytes[3..6]);
+                out[count] = pcm24_to_i2s_slot(&frame_bytes[..PCM24_SAMPLE_BYTES]);
+                out[count + 1] =
+                    pcm24_to_i2s_slot(&frame_bytes[PCM24_SAMPLE_BYTES..PCM24_STEREO_FRAME_BYTES]);
                 count += 2;
             }
             count
@@ -213,24 +235,24 @@ async fn main(_spawner: Spawner) {
     } = Pio::new(p.PIO0, Irqs);
 
     // UAC2 デバイスとしてホストへ見せる基本情報を設定する。
-    let mut usb_config = embassy_usb::Config::new(0x1209, 0x2350);
+    let mut usb_config = embassy_usb::Config::new(USB_VENDOR_ID, USB_PRODUCT_ID);
     usb_config.manufacturer = Some("hirata-naoto");
     usb_config.product = Some("XIAO RP2350 USB Audio to I2S");
     usb_config.serial_number = Some("0001");
-    usb_config.device_class = 0xEF;
-    usb_config.device_sub_class = 0x02;
-    usb_config.device_protocol = 0x01;
+    usb_config.device_class = USB_DEVICE_CLASS_MISCELLANEOUS;
+    usb_config.device_sub_class = USB_DEVICE_SUBCLASS_COMMON;
+    usb_config.device_protocol = USB_DEVICE_PROTOCOL_IAD;
     usb_config.composite_with_iads = true;
-    usb_config.max_power = 100;
-    usb_config.max_packet_size_0 = 64;
+    usb_config.max_power = USB_MAX_POWER_MA;
+    usb_config.max_packet_size_0 = USB_CONTROL_MAX_PACKET_SIZE;
 
     let mut builder = Builder::new(
         driver,
         usb_config,
-        CONFIG_DESCRIPTOR.init([0; 256]),
-        BOS_DESCRIPTOR.init([0; 64]),
+        CONFIG_DESCRIPTOR.init([0; CONFIG_DESCRIPTOR_SIZE]),
+        BOS_DESCRIPTOR.init([0; BOS_DESCRIPTOR_SIZE]),
         &mut [],
-        CONTROL_BUF.init([0; 64]),
+        CONTROL_BUF.init([0; CONTROL_BUF_SIZE]),
     );
 
     let (
@@ -268,11 +290,9 @@ async fn main(_spawner: Spawner) {
     i2s.prime(&silence[..initial_packet_words]);
     i2s.start();
 
-
     // 以下で6個のFuturesの作成
     // Future USB バスイベントと制御要求を継続処理するデバイス側の実行ループ。
     let usb_fut = usb.run();
-
 
     // Future Alt 1 の有効化を待って 16-bit PCM を受信し、有効化・無効化時に FIFO を消去する。
     let receive_16_fut = async {
@@ -313,7 +333,6 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-
     // Future Alt 2 から packed 24-bit PCM を受信し、16-bit 側と同じ共有 FIFO へ格納する。
     let receive_24_fut = async {
         let mut packet = [0u8; audio::USB_PACKET_SIZE_24];
@@ -350,7 +369,6 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
-
 
     // Future 設定世代と FIFO 水位を監視し、無音補完・開始待ち・フィードバック更新後に DMA 送信する。
     let playback_fut = async {
@@ -449,7 +467,7 @@ async fn main(_spawner: Spawner) {
                 }
 
                 diag_frames = diag_frames.saturating_add(1);
-                if diag_frames >= 1_000 {
+                if diag_frames >= DIAGNOSTIC_LOG_INTERVAL_FRAMES {
                     diag_frames = 0;
                     info!(
                         "playback diag fifo={} target={} feedback={} correction={}",
@@ -474,7 +492,6 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-
     // Future Alt 1 の IN エンドポイントへ最新の 4 バイト補正値を送り、無効化されたら待機に戻る。
     let feedback_16_fut = async {
         loop {
@@ -491,7 +508,6 @@ async fn main(_spawner: Spawner) {
             }
         }
     };
-
 
     // Future Alt 2 の IN エンドポイントへ共通の補正値を送る。送信間隔は USB 転送に従う。
     let feedback_24_fut = async {
