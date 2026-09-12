@@ -26,9 +26,9 @@
 
 | Alt | ビット幅 | wMaxPacketSize | エンドポイント | 方向/転送種別 | 同期 |
 |---|---|---|---|---|---|
-| 1 | 16-bit | 384 bytes (96kHz時) | Stream EP | OUT / Isochronous | Asynchronous |
+| 1 | 16-bit | 772 bytes (192kHz時、1フレーム余裕込み) | Stream EP | OUT / Isochronous | Asynchronous |
 | 1 | 16-bit | 4 bytes | Feedback EP | IN / Isochronous | Feedback (10.14固定小数点、上位1byteは0) |
-| 2 | 24-bit | 576 bytes (96kHz時) | Stream EP | OUT / Isochronous | Asynchronous |
+| 2 | 24-bit | 582 bytes (96kHz時、1フレーム余裕込み) | Stream EP | OUT / Isochronous | Asynchronous |
 | 2 | 24-bit | 4 bytes | Feedback EP | IN / Isochronous | Feedback (10.14固定小数点、上位1byteは0) |
 
 wMaxPacketSize の算出式: `ceil(sample_rate/1000) × channels(2) × bytes_per_sample`（96kHzを基準に確保）
@@ -37,7 +37,8 @@ wMaxPacketSize の算出式: `ceil(sample_rate/1000) × channels(2) × bytes_per
 
 | 項目 | 値 |
 |---|---|
-| 対応レート | 44,100 / 48,000 / 88,200 / 96,000 Hz |
+| 16-bit対応レート | 44,100 / 48,000 / 88,200 / 96,000 / 176,400 / 192,000 Hz |
+| 24-bit対応レート | 44,100 / 48,000 / 88,200 / 96,000 Hz |
 | チャンネル数 | 2 (FL/FR) |
 | ビット深度 | 16-bit / 24-bit（Alt Settingで切替） |
 | Feedback更新周期 | 1ms (FEEDBACK_REFRESH_PERIOD) |

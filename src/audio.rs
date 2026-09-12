@@ -1,14 +1,15 @@
 //! USB Full-Speed の再生専用 USB Audio Class 2.0 インターフェイスと共有制御状態。
 //!
 //! 対応形式は左右 2 チャネルの PCM Format I、16-bit（2 byte/sample）または
-//! packed 24-bit（3 byte/sample）、44.1 / 48 / 88.2 / 96 kHz。既定値は 16-bit / 48 kHz。
+//! packed 24-bit（3 byte/sample）。16-bit は 44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz、
+//! 24-bit は 44.1 / 48 / 88.2 / 96 kHz。既定値は 16-bit / 48 kHz。
 //! AudioControl の信号経路は USB Streaming Input Terminal → Feature Unit →
 //! Speaker Output Terminal で、両 Terminal が同じ内部可変 Clock Source を参照する。
 //! Feature Unit は互換性のために列挙するが、音量・ミュート制御は公開しない。
 //! AudioStreaming の Alt 0 は帯域を使わない停止状態、Alt 1 は 16-bit、Alt 2 は 24-bit。
 //! 各有効 Alt は独立した非同期等時 OUT と明示的フィードバック IN を持ち、
-//! 1 ms の最大 OUT 容量は 96 kHz 公称値に 1 フレームぶんの余裕を足した
-//! 388 / 582 byte として確保する。
+//! 1 ms の最大 OUT 容量は 16-bit 192 kHz / 24-bit 96 kHz の公称値に
+//! 1 フレームぶんの余裕を足した 772 / 582 byte として確保する。
 //!
 //! 現実装のフィードバック転送は 4 byte で、下位 3 byte にリトルエンディアンの
 //! 10.14 固定小数点値（ステレオフレーム数/ms）、第 4 byte に 0 を格納する。
@@ -17,7 +18,7 @@
 //!
 //! 制御要求は AudioControl の Clock Source、マスターチャネルを対象とする。
 //! 周波数 SET_CUR は先頭 4 byte の Hz 値を検証し、GET_CUR は現在の Hz 値を返す。
-//! GET_RANGE は対応する 4 レートを離散範囲として返し、Clock Validity GET_CUR は
+//! GET_RANGE は現在形式で対応する離散レートを返し、Clock Validity GET_CUR は
 //! 常に有効を返す。対象外要求は委譲（None）または拒否し、短いバッファは拒否する。
 //!
 //! 再生有効状態、周波数、ビット幅、設定世代、基準/補正済みフィードバック値を
@@ -44,12 +45,12 @@ pub const CHANNEL_COUNT: usize = 2;
 pub const BITS_PER_SAMPLE_16: u8 = 16;
 // Alt 2 で公開する 1 チャネル当たりの有効ビット数（USB では 3 byte に詰める）。
 pub const BITS_PER_SAMPLE_24: u8 = 24;
-// 16-bit / 96 kHz の 1 ms 等時 OUT 最大サイズ（Windows 互換性のため 1 フレーム余裕込みで 388 byte）。
-pub const USB_PACKET_SIZE_16: usize = usb_packet_size(BITS_PER_SAMPLE_16, 96_000);
+// 16-bit / 192 kHz の 1 ms 等時 OUT 最大サイズ（Windows 互換性のため 1 フレーム余裕込みで 772 byte）。
+pub const USB_PACKET_SIZE_16: usize = usb_packet_size(BITS_PER_SAMPLE_16, 192_000);
 // 24-bit / 96 kHz の 1 ms 等時 OUT 最大サイズ（Windows 互換性のため 1 フレーム余裕込みで 582 byte）。
 pub const USB_PACKET_SIZE_24: usize = usb_packet_size(BITS_PER_SAMPLE_24, 96_000);
-// 最大レートの USB 1 パケットを I2S へ展開したサイズ（32-bit ワード 192 個）。
-pub const MAX_I2S_PACKET_WORDS: usize = i2s_words_per_usb_packet(BITS_PER_SAMPLE_24, 96_000);
+// 最大レートの USB 1 パケットを I2S へ展開したサイズ（32-bit ワード 384 個）。
+pub const MAX_I2S_PACKET_WORDS: usize = i2s_words_per_usb_packet(BITS_PER_SAMPLE_16, 192_000);
 
 // Alternate Setting 1 / 2 の有効化状態を保持し、再生開始/停止を追跡する。
 pub static STREAM_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -155,8 +156,10 @@ const CLOCK_VALIDITY_TRUE: u8 = 1;
 const CLOCK_FREQUENCY_BYTES: usize = core::mem::size_of::<u32>();
 // クロック有効性の転送長（u8、1 byte）。
 const CLOCK_VALIDITY_BYTES: usize = core::mem::size_of::<u8>();
-// 16-bit / 24-bit の両形式で受け付け、GET_RANGE でも公開する周波数（Hz）。
-const SUPPORTED_SAMPLE_RATES_HZ: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
+// Alt 1（16-bit）で受け付け、GET_RANGE でも公開する周波数（Hz）。
+const SUPPORTED_SAMPLE_RATES_16_HZ: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+// Alt 2（24-bit）で受け付け、GET_RANGE でも公開する周波数（Hz）。
+const SUPPORTED_SAMPLE_RATES_24_HZ: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
 
 // USB 要求の振り分けに必要なインターフェイス番号を保持するハンドラー。
 // エンドポイント自体は保持せず、生成時に呼び出し元へ返す。
@@ -201,19 +204,19 @@ const fn feedback_value_10_14(sample_rate_hz: u32) -> u32 {
     (sample_rate_hz << 14) / 1_000
 }
 
-// Hz 単位の入力が公開する 4 種類の離散レートのいずれかなら true を返す。
-fn supports_sample_rate(sample_rate_hz: u32) -> bool {
-    SUPPORTED_SAMPLE_RATES_HZ.contains(&sample_rate_hz)
+// ビット幅に対応する離散サンプルレート配列を返す。
+fn supported_sample_rates_hz(bits_per_sample: u8) -> &'static [u32] {
+    match bits_per_sample {
+        BITS_PER_SAMPLE_16 => &SUPPORTED_SAMPLE_RATES_16_HZ,
+        BITS_PER_SAMPLE_24 => &SUPPORTED_SAMPLE_RATES_24_HZ,
+        _ => &[],
+    }
 }
 
 // Alt Setting ごとのビット幅とクロック設定の組み合わせが許容範囲か判定する。
 // 1 チャネルのビット数と Hz を入力し、16/24-bit 以外または非対応レートなら false。
 pub fn supports_stream_format(bits_per_sample: u8, sample_rate_hz: u32) -> bool {
-    match bits_per_sample {
-        BITS_PER_SAMPLE_16 => supports_sample_rate(sample_rate_hz),
-        BITS_PER_SAMPLE_24 => supports_sample_rate(sample_rate_hz),
-        _ => false,
-    }
+    supported_sample_rates_hz(bits_per_sample).contains(&sample_rate_hz)
 }
 
 // 選択中の公称サンプルレート（Hz）を Relaxed 読み出しで返す。実クロック測定値ではない。
@@ -467,7 +470,7 @@ impl UsbAudioClass {
             USB_PROTOCOL_IP_02_00,
             None,
         );
-        // Alt 1 は 16-bit 用。96 kHz 公称値に 1 フレーム足しても FS の 1023 byte 制限内に収まる。
+        // Alt 1 は 16-bit 用。192 kHz 公称値に 1 フレーム足しても FS の 1023 byte 制限内に収まる。
         as_alt_16.descriptor(
             CS_INTERFACE,
             &[
@@ -676,21 +679,22 @@ impl Handler for UsbAudioClass {
                 Some(InResponse::Accepted(&buf[..bytes.len()]))
             }
             (CLOCK_FREQUENCY_CONTROL_SELECTOR, UAC2_GET_RANGE) => {
-                // 両ビット幅で使える 44.1/48/88.2/96 kHz を min=max の離散範囲として返す。
-                let mut response = [0u8; 2 + SUPPORTED_SAMPLE_RATES_HZ.len() * 12];
+                // 現在形式で使える離散レートを min=max の範囲として返す。
+                let rates = supported_sample_rates_hz(current_bits_per_sample());
+                let mut response = [0u8; 2 + SUPPORTED_SAMPLE_RATES_16_HZ.len() * 12];
                 if buf.len() < response.len() {
                     return Some(InResponse::Rejected);
                 }
-                response[0..2]
-                    .copy_from_slice(&(SUPPORTED_SAMPLE_RATES_HZ.len() as u16).to_le_bytes());
-                for (index, sample_rate_hz) in SUPPORTED_SAMPLE_RATES_HZ.iter().enumerate() {
+                let response_len = 2 + rates.len() * 12;
+                response[0..2].copy_from_slice(&(rates.len() as u16).to_le_bytes());
+                for (index, sample_rate_hz) in rates.iter().enumerate() {
                     let offset = 2 + index * 12;
                     response[offset..offset + 4].copy_from_slice(&sample_rate_hz.to_le_bytes());
                     response[offset + 4..offset + 8].copy_from_slice(&sample_rate_hz.to_le_bytes());
                     response[offset + 8..offset + 12].copy_from_slice(&0u32.to_le_bytes());
                 }
-                buf[..response.len()].copy_from_slice(&response);
-                Some(InResponse::Accepted(&buf[..response.len()]))
+                buf[..response_len].copy_from_slice(&response[..response_len]);
+                Some(InResponse::Accepted(&buf[..response_len]))
             }
             (CLOCK_VALIDITY_CONTROL_SELECTOR, UAC2_CUR) => {
                 if buf.len() < CLOCK_VALIDITY_BYTES {

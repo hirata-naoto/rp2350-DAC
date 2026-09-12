@@ -2,7 +2,8 @@
 //!
 //! 標準ライブラリとヒープを使わず、Embassy の非同期実行環境で USB 制御、16-bit/24-bit
 //! PCM 受信、I2S 再生、各形式の明示的フィードバック送信を協調実行する。
-//! 対応レートは 44.1/48/88.2/96 kHz。USB の little-endian PCM を左右順の
+//! 対応レートは 16-bit が 44.1/48/88.2/96/176.4/192 kHz、24-bit が 44.1/48/88.2/96 kHz。
+//! USB の little-endian PCM を左右順の
 //! 32-bit 左詰め I2S ワードへ変換し、共有リング FIFO を経由して PIO0/SM0 と DMA_CH0 へ渡す。
 //! 外部 DAC への出力は DOUT=GPIO26、BCLK=GPIO27、LRCLK=GPIO28 とする。
 //!
