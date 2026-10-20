@@ -13,7 +13,6 @@
 //! 本モジュールは PCM 変換・ソフト FIFO・無音補完を行わず、DMA で TX FIFO へ転送する。
 //! 供給が途切れれば PIO はデータ待ちになるため、継続供給は呼び出し側の責務とする。
 
-use embassy_rp::clocks::clk_sys_freq;
 use embassy_rp::dma;
 use embassy_rp::gpio::{Drive, SlewRate};
 use embassy_rp::interrupt::typelevel::Binding;
@@ -21,15 +20,11 @@ use embassy_rp::pio::{
     Common, Config, Direction, FifoJoin, Instance, LoadedProgram, PioPin, ShiftConfig,
     ShiftDirection, StateMachine,
 };
-use embassy_rp::pio_programs::clock_divider::calculate_pio_clock_divider;
+use embassy_rp::pio_programs::clock_divider::calculate_pio_clock_divider_value;
 use embassy_rp::Peri;
 
 // I2S は左右それぞれ 32-bit スロット固定で送出する。
 const I2S_SLOT_BITS: u32 = 32;
-// 1 音声フレームに含むチャンネル数。左と右の 2 スロットを順に送出する。
-const I2S_CHANNEL_COUNT: u32 = 2;
-// この PIO プログラムは 1 bit 出力に 2 サイクル使い、side-set で BCLK/LRCLK を同時駆動する。
-const PIO_CYCLES_PER_BIT: u32 = 2;
 // サンプル毎秒を Full-Speed USB の 1 ms あたりのフレーム数に変換する除数。
 const FEEDBACK_DENOMINATOR_HZ: u64 = 1_000;
 // 分周値の小数部 8 ビットと 10.14 の倍率を、1 フレーム 128 サイクルで補正した
@@ -120,13 +115,19 @@ impl<'d, PIO: Instance, const SM: usize> I2sPioTx<'d, PIO, SM> {
     // 呼び出し側で対応レートを選択する。送信停止、FIFO 消去、カウンタ初期化を伴うため、
     // 設定後は必要なデータを prime して start し直す。
     pub fn configure(&mut self, sample_rate_hz: u32) -> I2sTiming {
-        // 目標サンプルレートから必要な PIO ステートマシンクロックを逆算する。
-        let target_sm_hz = sample_rate_hz * I2S_SLOT_BITS * I2S_CHANNEL_COUNT * PIO_CYCLES_PER_BIT;
-        let clock_divider = calculate_pio_clock_divider(target_sm_hz);
+        let pio_divider = match sample_rate_hz {
+            88_200 | 96_000 => 9,
+            _ => 18,
+        };
+        let sys_clock_hz = crate::clock::current_sys_clock_hz();
+        let clock_divider = calculate_pio_clock_divider_value(
+            sys_clock_hz,
+            sys_clock_hz / pio_divider,
+        );
         let divider_bits = clock_divider.to_bits() as u64;
         let feedback_denominator = divider_bits * FEEDBACK_DENOMINATOR_HZ;
         // 実クロックに基づく USB Audio 10.14 フィードバック値を丸め込みで求める。
-        let feedback_value_10_14 = ((clk_sys_freq() as u64 * FEEDBACK_NUMERATOR_SCALE)
+        let feedback_value_10_14 = ((sys_clock_hz as u64 * FEEDBACK_NUMERATOR_SCALE)
             + feedback_denominator / 2)
             / feedback_denominator;
         let actual_sample_rate_hz =
@@ -157,6 +158,12 @@ impl<'d, PIO: Instance, const SM: usize> I2sPioTx<'d, PIO, SM> {
             actual_sample_rate_hz: actual_sample_rate_hz as u32,
             feedback_value_10_14: feedback_value_10_14 as u32,
         }
+    }
+
+    pub fn stop(&mut self) {
+        self.sm.set_enable(false);
+        self.sm.clear_fifos();
+        self.started = false;
     }
 
     // 停止中の TX FIFO を空にし、入力の先頭最大 8 ワードを開始用データとして投入する。

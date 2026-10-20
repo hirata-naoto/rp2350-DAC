@@ -32,6 +32,7 @@ use panic_probe as _;
 use static_cell::StaticCell;
 
 mod audio;
+mod clock;
 mod i2s;
 
 // USB / PIO / DMA の割り込みを Embassy の型付きハンドラへ結び付ける。
@@ -223,7 +224,7 @@ fn bytes_to_i2s_words(bytes: &[u8], bits_per_sample: u8, out: &mut [u32]) -> usi
     entry = "cortex_m_rt::entry"
 )]
 async fn main(_spawner: Spawner) {
-    let p = embassy_rp::init(Default::default());
+    let p = embassy_rp::init(clock::embassy_config());
     info!("boot");
 
     // USB デバイスを初期化
@@ -266,6 +267,7 @@ async fn main(_spawner: Spawner) {
     builder.handler(audio_handler);
 
     let mut usb = builder.build();
+    clock::set_for_sample_rate(audio::current_sample_rate_hz());
     let mut i2s = i2s::I2sPioTx::new(
         &mut common,
         sm0,
@@ -398,6 +400,8 @@ async fn main(_spawner: Spawner) {
                     let mut fifo = AUDIO_FIFO.lock().await;
                     fifo.clear();
                 }
+                i2s.stop();
+                clock::set_for_sample_rate(audio::current_sample_rate_hz());
                 i2s_timing = i2s.configure(audio::current_sample_rate_hz());
                 audio::reset_feedback_control(i2s_timing.feedback_value_10_14);
                 info!(
