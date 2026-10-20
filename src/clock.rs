@@ -2,9 +2,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use embassy_rp::clocks::{
-    ClockConfig, PllConfig, SysClkConfig, SysClkSrc,
-};
+use embassy_rp::clocks::{ClockConfig, PllConfig, SysClkConfig, SysClkSrc};
 use embassy_rp::pac;
 
 const XOSC_HZ: u32 = 12_000_000;

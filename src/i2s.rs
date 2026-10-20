@@ -120,10 +120,8 @@ impl<'d, PIO: Instance, const SM: usize> I2sPioTx<'d, PIO, SM> {
             _ => 18,
         };
         let sys_clock_hz = crate::clock::current_sys_clock_hz();
-        let clock_divider = calculate_pio_clock_divider_value(
-            sys_clock_hz,
-            sys_clock_hz / pio_divider,
-        );
+        let clock_divider =
+            calculate_pio_clock_divider_value(sys_clock_hz, sys_clock_hz / pio_divider);
         let divider_bits = clock_divider.to_bits() as u64;
         let feedback_denominator = divider_bits * FEEDBACK_DENOMINATOR_HZ;
         // 実クロックに基づく USB Audio 10.14 フィードバック値を丸め込みで求める。
