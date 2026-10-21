@@ -7,7 +7,7 @@ use embassy_rp::pac;
 
 const XOSC_HZ: u32 = 12_000_000;
 pub const CLOCK_48_FAMILY_HZ: u32 = 110_571_428;
-pub const CLOCK_44_FAMILY_HZ: u32 = 101_587_301;
+pub const CLOCK_44_FAMILY_HZ: u32 = 101_600_000;
 const SYS_CLOCK_48_FAMILY: u32 = 0;
 const SYS_CLOCK_44_FAMILY: u32 = 1;
 
@@ -40,11 +40,11 @@ pub fn set_for_sample_rate(sample_rate_hz: u32) -> u32 {
             SYS_CLOCK_44_FAMILY,
             PllConfig {
                 refdiv: 1,
-                fbdiv: 100,
-                post_div1: 1,
-                post_div2: 1,
+                fbdiv: 127,
+                post_div1: 5,
+                post_div2: 3,
             },
-            (11, 208),
+            (1, 0),
             CLOCK_44_FAMILY_HZ,
         ),
         _ => (
